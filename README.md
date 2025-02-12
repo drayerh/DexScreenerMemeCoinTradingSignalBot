@@ -24,7 +24,7 @@ MemeCoinTradingBot is a Python-based trading bot designed to monitor and analyze
 
 1. Clone the repository:
     ```sh
-    git clone https://github.com/yourusername/MemeCoinTradingBot.git
+    git clone https://github.com/drayerh/MemeCoinTradingBot.git
     cd MemeCoinTradingBot
     ```
 
