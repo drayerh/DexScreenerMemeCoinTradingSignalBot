@@ -8,6 +8,8 @@ on:
   schedule:
     - cron: "7 */6 * * *"
   workflow_dispatch:
+  push:
+    branches: ["run/collector-check"]
 
 permissions:
   contents: read
@@ -31,7 +33,7 @@ jobs:
       DSB_POCKET_UNIVERSE_API_KEY: ${{ secrets.DSB_POCKET_UNIVERSE_API_KEY }}
       DSB_TELEGRAM_TOKEN: ${{ secrets.DSB_TELEGRAM_TOKEN }}
       DSB_TELEGRAM_CHAT_ID: ${{ secrets.DSB_TELEGRAM_CHAT_ID }}
-      SHIFT_SECONDS: "20400" # 5h40m
+      SHIFT_SECONDS: "600"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
