@@ -23,7 +23,7 @@ from .models import (
 )
 from .risk import Creator, RiskAssessment
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -138,9 +138,32 @@ CREATE TABLE IF NOT EXISTS token_labels (
 );
 """
 
+# v3: watchlist of discovered tokens not yet tradeable (FR-19), and discovery time on tokens.
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS watchlist (
+    chain_id TEXT NOT NULL,
+    token_address TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_checked TEXT NOT NULL,
+    last_reason TEXT NOT NULL,
+    checks INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (chain_id, token_address)
+);
+CREATE INDEX IF NOT EXISTS ix_watchlist_first_seen ON watchlist (first_seen);
+"""
+
 HORIZONS_MINUTES = (60, 360, 1440)
 EXPORTABLE = frozenset(
-    {"snapshots", "observations", "risk_checks", "observation_outcomes", "token_labels", "deployers"}
+    {
+        "snapshots",
+        "observations",
+        "risk_checks",
+        "observation_outcomes",
+        "token_labels",
+        "deployers",
+        "watchlist",
+        "tokens",
+    }
 )
 
 
@@ -189,6 +212,9 @@ class Storage:
                 " SELECT chain_id, token_address, MIN(symbol), MIN(observed_at), 'v1' FROM snapshots"
                 " GROUP BY chain_id, token_address"
             )
+        if version < 3:
+            self._conn.executescript(_SCHEMA_V3)
+            self._conn.execute("ALTER TABLE tokens ADD COLUMN discovered_at TEXT")
         self._conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -340,6 +366,10 @@ class Storage:
             "labelled_tokens": count("SELECT COUNT(*) FROM token_labels"),
             "rugged_tokens": count("SELECT COUNT(*) FROM token_labels WHERE rugged = 1"),
             "outcomes": count("SELECT COUNT(*) FROM observation_outcomes"),
+            "watching": count("SELECT COUNT(*) FROM watchlist"),
+            "graduated_tokens": count(
+                "SELECT COUNT(*) FROM tokens WHERE discovered_at IS NOT NULL AND discovered_at < first_seen"
+            ),
         }
 
     def export_csv(self, table: str, out: TextIO) -> int:
@@ -368,13 +398,54 @@ class Storage:
             self.set_meta("last_ok_cycle_at", _iso(now))
 
     # --- v2: tracked tokens (REVIEW finding 1) --------------------------------
-    def register_token(self, snap: PairSnapshot, now: datetime) -> bool:
-        """Record first sighting. Returns True if the token is new."""
+    def register_token(
+        self, snap: PairSnapshot, now: datetime, discovered_at: datetime | None = None
+    ) -> bool:
+        """Record first accepted sighting, and when discovery first saw the token (it may have
+        waited on the watchlist). Returns True if the token is new."""
         cur = self._conn.execute(
-            "INSERT OR IGNORE INTO tokens (chain_id, token_address, symbol, first_seen) VALUES (?, ?, ?, ?)",
-            (snap.chain_id, _norm(snap.token_address), snap.symbol, _iso(now)),
+            "INSERT OR IGNORE INTO tokens (chain_id, token_address, symbol, first_seen, discovered_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                snap.chain_id,
+                _norm(snap.token_address),
+                snap.symbol,
+                _iso(now),
+                _iso(min(discovered_at or now, now)),
+            ),
         )
         return cur.rowcount > 0
+
+    # --- v3: watchlist (FR-19) -------------------------------------------------
+    def watch(self, ref: TokenRef, reason: str, now: datetime) -> None:
+        self._conn.execute(
+            "INSERT INTO watchlist (chain_id, token_address, first_seen, last_checked, last_reason)"
+            " VALUES (?, ?, ?, ?, ?) ON CONFLICT (chain_id, token_address) DO UPDATE SET"
+            " last_checked = excluded.last_checked, last_reason = excluded.last_reason,"
+            " checks = checks + 1",
+            (ref.chain_id, _norm(ref.token_address), _iso(now), _iso(now), reason),
+        )
+
+    def unwatch(self, ref: TokenRef) -> None:
+        self._conn.execute(
+            "DELETE FROM watchlist WHERE chain_id = ? AND token_address = ?",
+            (ref.chain_id, _norm(ref.token_address)),
+        )
+
+    def watched(self, since: datetime, limit: int) -> dict[TokenRef, datetime]:
+        """Newest watched tokens first seen at or after `since`, with their discovery time."""
+        rows = self._conn.execute(
+            "SELECT chain_id, token_address, first_seen FROM watchlist WHERE first_seen >= ?"
+            " ORDER BY first_seen DESC LIMIT ?",
+            (_iso(since), limit),
+        ).fetchall()
+        return {
+            TokenRef(r["chain_id"], r["token_address"]): datetime.fromisoformat(r["first_seen"]) for r in rows
+        }
+
+    def prune_watchlist(self, older_than: datetime) -> int:
+        cur = self._conn.execute("DELETE FROM watchlist WHERE first_seen < ?", (_iso(older_than),))
+        return cur.rowcount
 
     def is_known(self, chain_id: str, address: str) -> bool:
         row = self._conn.execute(

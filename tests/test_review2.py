@@ -19,7 +19,7 @@ from dexsignal.models import ScreenStatus, TokenRef
 from dexsignal.pipeline import Pipeline
 from dexsignal.providers import PairFetch
 from dexsignal.risk import Creator, RiskAssessment, top_holder_share
-from dexsignal.storage import Storage
+from dexsignal.storage import SCHEMA_VERSION, Storage
 
 from .conftest import T0, FakeClock, FakeMarket, FakeNotifier, FakeProvider, snap
 
@@ -214,7 +214,7 @@ def test_v1_migration_preserves_tables_and_excludes_backfill(tmp_path: Path) -> 
     conn.commit()
     conn.close()
     s = Storage(db)
-    assert s.schema_version() == 2
+    assert s.schema_version() == SCHEMA_VERSION
     assert s.is_blacklisted("solana", "Bad") and len(s.observations()) == 1
     assert s.unlabelled_tokens(T0 + timedelta(days=10), T0 - timedelta(days=10)) == []
     assert s.tracked_tokens(T0 - timedelta(days=10), T0 + timedelta(days=10)) == []

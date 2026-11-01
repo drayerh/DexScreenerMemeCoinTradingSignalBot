@@ -20,6 +20,11 @@ from .storage import Storage, utc_now
 
 log = logging.getLogger(__name__)
 
+# FR-19: reasons that may change as a young token gains a pool and liquidity.
+WATCH_REASONS = frozenset(
+    {"no_pool_yet", "no_pair_data", "lookup_failed", "low_liquidity", "suspicious_volume"}
+)
+
 
 class MarketData(Protocol):
     def latest_tokens(self) -> list[TokenRef]: ...
@@ -34,6 +39,8 @@ class Notifier(Protocol):
 class CycleReport:
     discovered: int = 0
     tracked: int = 0
+    watching: int = 0
+    graduated: int = 0
     accepted: int = 0
     rejected: Counter[str] = field(default_factory=Counter)
     snapshots: int = 0
@@ -135,19 +142,21 @@ class Pipeline:
         refs: list[TokenRef],
         found: dict[TokenRef, PairSnapshot],
         *,
-        failed: set[TokenRef],
+        fetch: PairFetch,
         tracked_set: set[TokenRef],
+        watched: dict[TokenRef, datetime],
         now: datetime,
         report: CycleReport,
-    ) -> tuple[list[PairSnapshot], list[PairSnapshot]]:
-        """Split this cycle's tokens into (to store, may raise observations)."""
-        to_store: list[PairSnapshot] = []
+    ) -> tuple[list[tuple[PairSnapshot, datetime | None]], list[PairSnapshot]]:
+        """Split this cycle's tokens into (to store with discovery time, may raise observations).
+        Tokens rejected for reasons that can change are kept on the watchlist (FR-19)."""
+        to_store: list[tuple[PairSnapshot, datetime | None]] = []
         observable: list[PairSnapshot] = []
         for ref in refs:
             snap = found.get(ref)
             if ref in tracked_set:
                 if snap is None:
-                    if ref in failed:
+                    if ref in fetch.failed:
                         continue  # outage, not evidence of a rug
                     snap = self._missing_snapshot(ref)
                     report.missing += 1
@@ -161,25 +170,42 @@ class Pipeline:
                         log.warning(
                             "re-screen error token=%s error=%s", ref.token_address, type(exc).__name__
                         )
-                to_store.append(snap)
+                to_store.append((snap, None))
                 if not self._blocked_now(snap):
                     observable.append(snap)
                 continue
-            if snap is None:
-                continue
-            try:
-                reason = self._reject_reason(snap, now)
-            except Exception as exc:  # NFR-1: one token never aborts the cycle
-                log.warning("screening error token=%s error=%s", snap.token_address, type(exc).__name__)
-                reason = "screening_error"
+            reason = self._untracked_reason(ref, snap, fetch, now)
             if reason:
                 report.rejected[reason] += 1
-            else:
-                to_store.append(snap)
-                observable.append(snap)
-                report.accepted += 1
+                if reason in WATCH_REASONS and self.s.watch_hours > 0:
+                    if ref in watched or not self.storage.is_known(ref.chain_id, ref.token_address):
+                        self.storage.watch(ref, reason, now)
+                elif ref in watched:
+                    self.storage.unwatch(ref)
+                continue
+            if snap is None:  # unreachable: a missing pair always has a reason
+                continue
+            to_store.append((snap, watched.get(ref)))
+            observable.append(snap)
+            report.accepted += 1
+            if ref in watched:
+                self.storage.unwatch(ref)
+                report.graduated += 1
 
         return to_store, observable
+
+    def _untracked_reason(
+        self, ref: TokenRef, snap: PairSnapshot | None, fetch: PairFetch, now: datetime
+    ) -> str:
+        if snap is None:
+            if ref in fetch.failed:
+                return "lookup_failed"
+            return "no_pool_yet" if ref in fetch.unpooled else "no_pair_data"
+        try:
+            return self._reject_reason(snap, now)
+        except Exception as exc:  # NFR-1: one token never aborts the cycle
+            log.warning("screening error token=%s error=%s", snap.token_address, type(exc).__name__)
+            return "screening_error"
 
     # --- cycle -------------------------------------------------------------------
     def run_cycle(self) -> CycleReport:
@@ -198,20 +224,31 @@ class Pipeline:
         tracked = self.storage.tracked_tokens(now - tracking_window(self.s.track_hours), now - MAX_HORIZON)
         tracked_set = {TokenRef(t.chain_id, norm_address(t.token_address)) for t in tracked}
         report.tracked = len(tracked_set)
+        watched: dict[TokenRef, datetime] = {}
+        if self.s.watch_hours > 0:
+            self.storage.prune_watchlist(now - timedelta(hours=self.s.watch_hours))
+            watched = {
+                TokenRef(r.chain_id, norm_address(r.token_address)): seen
+                for r, seen in self.storage.watched(
+                    now - timedelta(hours=self.s.watch_hours), self.s.watch_max_tokens
+                ).items()
+            }
         refs = list(
-            dict.fromkeys(TokenRef(r.chain_id, norm_address(r.token_address)) for r in [*latest, *tracked])
+            dict.fromkeys(
+                TokenRef(r.chain_id, norm_address(r.token_address)) for r in [*latest, *tracked, *watched]
+            )
         )
+        report.watching = len(set(watched) - tracked_set)
         fetch = self.market.best_pairs(refs) if refs else PairFetch()
         found = {TokenRef(p.chain_id, norm_address(p.token_address)): p for p in fetch.pairs}
-        report.rejected["no_pair_data"] = len([r for r in refs if r not in found and r not in tracked_set])
 
         to_store, observable = self._partition(
-            refs, found, failed=fetch.failed, tracked_set=tracked_set, now=now, report=report
+            refs, found, fetch=fetch, tracked_set=tracked_set, watched=watched, now=now, report=report
         )
 
         with self.storage.transaction():
-            for snap in to_store:
-                self.storage.register_token(snap, now)
+            for snap, discovered_at in to_store:
+                self.storage.register_token(snap, now, discovered_at)
                 self.storage.add_snapshot(snap, now)
         report.snapshots = len(to_store)
 
@@ -225,11 +262,13 @@ class Pipeline:
         report.rejected = +report.rejected  # drop zero counts
         report.duration_seconds = time.monotonic() - started
         log.info(
-            "cycle discovered=%d tracked=%d accepted=%d rejected=%s snapshots=%d missing=%d"
-            " observations=%d notified=%d labelled=%d duration=%.1fs",
+            "cycle discovered=%d tracked=%d watching=%d accepted=%d graduated=%d rejected=%s"
+            " snapshots=%d missing=%d observations=%d notified=%d labelled=%d duration=%.1fs",
             report.discovered,
             report.tracked,
+            report.watching,
             report.accepted,
+            report.graduated,
             dict(report.rejected),
             report.snapshots,
             report.missing,

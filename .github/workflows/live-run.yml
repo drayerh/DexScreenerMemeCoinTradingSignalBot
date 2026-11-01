@@ -1,0 +1,61 @@
+name: Live research run
+
+# On-demand live session: runs cycles against the real APIs, then reports and
+# uploads the database. Each run starts from an empty database.
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: "Number of cycles, five minutes apart (1-60)"
+        default: "12"
+  push:
+    branches: ["run/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      DSB_DATABASE_PATH: dexsignal.db
+      DSB_GOPLUS_TOKEN: ${{ secrets.DSB_GOPLUS_TOKEN }}
+      DSB_ETHERSCAN_API_KEY: ${{ secrets.DSB_ETHERSCAN_API_KEY }}
+      DSB_POCKET_UNIVERSE_BASE_URL: ${{ secrets.DSB_POCKET_UNIVERSE_BASE_URL }}
+      DSB_POCKET_UNIVERSE_API_KEY: ${{ secrets.DSB_POCKET_UNIVERSE_API_KEY }}
+      CYCLES: ${{ inputs.cycles || '12' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Run cycles
+        run: |
+          case "$CYCLES" in ''|*[!0-9]*) echo "cycles must be a number"; exit 1;; esac
+          if [ "$CYCLES" -lt 1 ] || [ "$CYCLES" -gt 60 ]; then echo "cycles must be 1-60"; exit 1; fi
+          for i in $(seq 1 "$CYCLES"); do
+            echo "::group::cycle $i"
+            dexsignal once || echo "cycle $i: discovery failed"
+            echo "::endgroup::"
+            if [ "$i" -lt "$CYCLES" ]; then sleep 300; fi
+          done
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo '## Stats'; echo '```'; dexsignal stats; echo '```'
+            echo '## Evaluate'; echo '```'; dexsignal evaluate; echo '```'
+            echo '## Deployers'; echo '```'; dexsignal deployer list | head -40; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for t in snapshots observations risk_checks deployers tokens watchlist; do
+            dexsignal export "$t" -o "$t.csv"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dexsignal-live-run
+          path: |
+            dexsignal.db
+            *.csv
