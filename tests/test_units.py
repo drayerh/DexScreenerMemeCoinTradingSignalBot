@@ -145,3 +145,34 @@ def test_file_database_uses_wal(tmp_path: Path) -> None:
     s2 = Storage(db)
     assert s2.stats()["snapshots"] == 1
     s2.close()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"DSB_STRICT_SCREENING": "maybe"},
+        {"DSB_POCKET_UNIVERSE_METHOD": "PUT"},
+        {"DSB_LOG_FORMAT": "xml"},
+        {"DSB_POCKET_UNIVERSE_API_KEY": "k"},
+        {"DSB_MAX_TAX_PCT": "150"},
+    ],
+)
+def test_invalid_v2_config(env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError):
+        Settings.from_env(env)
+
+
+def test_v2_config_and_secrets() -> None:
+    s = Settings.from_env(
+        {
+            "DSB_STRICT_SCREENING": "yes",
+            "DSB_GOPLUS_ENABLED": "0",
+            "DSB_POCKET_UNIVERSE_BASE_URL": "https://pu/",
+            "DSB_POCKET_UNIVERSE_API_KEY": "secretkey",
+            "DSB_POCKET_UNIVERSE_METHOD": "post",
+            "DSB_ETHERSCAN_API_KEY": "abc",
+        }
+    )
+    assert s.strict_screening and not s.goplus_enabled and s.pocket_universe_enabled
+    assert s.pocket_universe_base_url == "https://pu" and s.pocket_universe_method == "POST"
+    assert s.secrets == ("secretkey",)  # values shorter than 4 characters are not redacted

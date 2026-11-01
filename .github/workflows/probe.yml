@@ -1,0 +1,28 @@
+name: Provider contract probe
+
+# Nightly live check that each provider still returns the documented shape
+# (REVIEW finding 15). Optional secrets enable the keyed providers.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Probe providers
+        env:
+          DSB_GOPLUS_TOKEN: ${{ secrets.DSB_GOPLUS_TOKEN }}
+          DSB_ETHERSCAN_API_KEY: ${{ secrets.DSB_ETHERSCAN_API_KEY }}
+          DSB_POCKET_UNIVERSE_BASE_URL: ${{ secrets.DSB_POCKET_UNIVERSE_BASE_URL }}
+          DSB_POCKET_UNIVERSE_API_KEY: ${{ secrets.DSB_POCKET_UNIVERSE_API_KEY }}
+        run: dexsignal probe

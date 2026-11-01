@@ -7,6 +7,11 @@ from datetime import datetime
 from enum import Enum
 
 
+def norm_address(address: str) -> str:
+    """EVM addresses are case-insensitive; Solana mints are not. Normalise only 0x-hex."""
+    return address.lower() if address.startswith("0x") else address
+
+
 class ObservationKind(str, Enum):
     RISE = "RISE"
     FALL = "FALL"

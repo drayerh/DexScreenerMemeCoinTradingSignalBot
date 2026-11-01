@@ -41,6 +41,17 @@ def _get_str(env: Mapping[str, str], key: str, default: str = "") -> str:
     return env.get(key, default).strip()
 
 
+def _get_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
+    raw = env.get(key, "").strip().lower()
+    if raw == "":
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be true or false, got {raw!r}")
+
+
 @dataclass(frozen=True)
 class Settings:
     """All runtime settings. See docs/SPEC.md for the meaning of each."""
@@ -66,6 +77,39 @@ class Settings:
     liq_drop_pct: float = 50.0
     alert_cooldown_minutes: int = 360
     retention_days: int = 30
+    # Risk intelligence (SPEC FR-12 to FR-17)
+    goplus_base_url: str = "https://api.gopluslabs.io"
+    goplus_token: str = ""
+    goplus_enabled: bool = True
+    etherscan_base_url: str = "https://api.etherscan.io"
+    etherscan_api_key: str = ""
+    pocket_universe_base_url: str = ""
+    pocket_universe_api_key: str = ""
+    pocket_universe_method: str = "GET"
+    pocket_universe_param: str = "address"
+    strict_screening: bool = False
+    max_tax_pct: float = 10.0
+    max_top10_pct: float = 50.0
+    deployer_max_rugs: int = 2
+    rug_liq_drop_pct: float = 80.0
+    track_hours: int = 24
+    negative_ttl_minutes: int = 10
+    log_format: str = "text"
+
+    @property
+    def pocket_universe_enabled(self) -> bool:
+        return bool(self.pocket_universe_base_url and self.pocket_universe_api_key)
+
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        """Values that must never appear in logs (REVIEW finding 12)."""
+        values = (
+            self.telegram_token,
+            self.goplus_token,
+            self.etherscan_api_key,
+            self.pocket_universe_api_key,
+        )
+        return tuple(v for v in values if len(v) >= 4)
 
     @property
     def telegram_enabled(self) -> bool:
@@ -102,10 +146,44 @@ class Settings:
             fall_pct=_get_float(e, "DSB_FALL_PCT", d.fall_pct),
             liq_drop_pct=_get_float(e, "DSB_LIQ_DROP_PCT", d.liq_drop_pct),
             alert_cooldown_minutes=_get_int(e, "DSB_ALERT_COOLDOWN_MINUTES", d.alert_cooldown_minutes),
-            retention_days=_get_int(e, "DSB_RETENTION_DAYS", d.retention_days, minimum=1),
+            retention_days=_get_int(e, "DSB_RETENTION_DAYS", d.retention_days, minimum=2),
+            goplus_base_url=_get_str(e, "DSB_GOPLUS_BASE_URL", d.goplus_base_url).rstrip("/"),
+            goplus_token=_get_str(e, "DSB_GOPLUS_TOKEN"),
+            goplus_enabled=_get_bool(e, "DSB_GOPLUS_ENABLED", d.goplus_enabled),
+            etherscan_base_url=_get_str(e, "DSB_ETHERSCAN_BASE_URL", d.etherscan_base_url).rstrip("/"),
+            etherscan_api_key=_get_str(e, "DSB_ETHERSCAN_API_KEY"),
+            pocket_universe_base_url=_get_str(e, "DSB_POCKET_UNIVERSE_BASE_URL").rstrip("/"),
+            pocket_universe_api_key=_get_str(e, "DSB_POCKET_UNIVERSE_API_KEY"),
+            pocket_universe_method=_get_str(
+                e, "DSB_POCKET_UNIVERSE_METHOD", d.pocket_universe_method
+            ).upper(),
+            pocket_universe_param=_get_str(e, "DSB_POCKET_UNIVERSE_PARAM", d.pocket_universe_param),
+            strict_screening=_get_bool(e, "DSB_STRICT_SCREENING", d.strict_screening),
+            max_tax_pct=_get_float(e, "DSB_MAX_TAX_PCT", d.max_tax_pct),
+            max_top10_pct=_get_float(e, "DSB_MAX_TOP10_PCT", d.max_top10_pct),
+            deployer_max_rugs=_get_int(e, "DSB_DEPLOYER_MAX_RUGS", d.deployer_max_rugs, minimum=1),
+            rug_liq_drop_pct=_get_float(e, "DSB_RUG_LIQ_DROP_PCT", d.rug_liq_drop_pct),
+            track_hours=_get_int(e, "DSB_TRACK_HOURS", d.track_hours, minimum=1),
+            negative_ttl_minutes=_get_int(e, "DSB_NEGATIVE_TTL_MINUTES", d.negative_ttl_minutes, minimum=1),
+            log_format=_get_str(e, "DSB_LOG_FORMAT", d.log_format).lower(),
         )
         if bool(settings.telegram_token) != bool(settings.telegram_chat_id):
             raise ConfigError("Set both DSB_TELEGRAM_TOKEN and DSB_TELEGRAM_CHAT_ID, or neither")
-        if settings.fall_pct > 100 or settings.liq_drop_pct > 100:
-            raise ConfigError("DSB_FALL_PCT and DSB_LIQ_DROP_PCT must be <= 100")
+        for key, value in (
+            ("DSB_FALL_PCT", settings.fall_pct),
+            ("DSB_LIQ_DROP_PCT", settings.liq_drop_pct),
+            ("DSB_RUG_LIQ_DROP_PCT", settings.rug_liq_drop_pct),
+            ("DSB_MAX_TAX_PCT", settings.max_tax_pct),
+            ("DSB_MAX_TOP10_PCT", settings.max_top10_pct),
+        ):
+            if value > 100:
+                raise ConfigError(f"{key} must be <= 100")
+        if settings.pocket_universe_method not in {"GET", "POST"}:
+            raise ConfigError("DSB_POCKET_UNIVERSE_METHOD must be GET or POST")
+        if settings.log_format not in {"text", "json"}:
+            raise ConfigError("DSB_LOG_FORMAT must be text or json")
+        if bool(settings.pocket_universe_base_url) != bool(settings.pocket_universe_api_key):
+            raise ConfigError(
+                "Set both DSB_POCKET_UNIVERSE_BASE_URL and DSB_POCKET_UNIVERSE_API_KEY, or neither"
+            )
         return settings

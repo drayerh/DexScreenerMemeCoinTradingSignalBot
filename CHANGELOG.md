@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.0
+
+Implements the expert review in `docs/REVIEW.md` (19 of 22 findings; 3 deferred
+with reasons), then fixes all findings from an independent code review (round 2;
+one partly, with the remainder deferred).
+
+### Added
+- GoPlus screening for EVM chains and Solana: honeypots, taxes, owner powers,
+  mint and freeze authority, malicious creators, holder concentration.
+- Deployer intelligence: deployer table, manual block, malicious flag,
+  serial-rugger rule based on labelled rugs; Etherscan V2 creator fallback.
+- Pocket Universe provider, gated behind configuration and a `probe` command.
+- Point-in-time risk history (`risk_checks`), composite verdict, strict mode.
+- 24-hour tracking of accepted tokens, outcome labels at 1/6/24 hours, rug
+  labels, and `evaluate` with a baseline and Wilson intervals.
+- `health` (heartbeat), `probe`, `deployer` and `evaluate` commands; JSON logs;
+  secret redaction in all logs.
+- Schema v2 with an additive migration from v1.
+- `pip-audit` in CI, Dependabot, nightly provider probe, non-root Docker image.
+
+### Fixed after independent review (docs/REVIEW.md, round 2)
+- +24h outcomes now measured under real timing; vanished pairs counted as rugs.
+- Blocks applied after acceptance now stop observations; unscreened tokens re-screened.
+- `probe pocket` never prints the key; encoded keys and tracebacks are redacted.
+- Evaluation coverage, per-horizon small-sample flags and post-observation rug rates.
+- v1 backfill excluded from labels; negative caching; bounded labelling queries.
+
+### Changed
+- RugCheck moved into the risk-provider framework; it now records `lpLockedPct`
+  and treats a missing score as unscreened.
+- `DSB_RETENTION_DAYS` must be at least 2 so labelling has the data it needs.
+
 ## 1.0.0
 
 Rebuilt as a private research tool against a written specification
