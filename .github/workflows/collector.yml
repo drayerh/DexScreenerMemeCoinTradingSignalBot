@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e .
       - name: Restore database from the previous shift
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: data
           key: collector-db-${{ github.run_id }}
@@ -70,7 +70,7 @@ jobs:
           PY
       - name: Save database for the next shift
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: data
           key: collector-db-${{ github.run_id }}
