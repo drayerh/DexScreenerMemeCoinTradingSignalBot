@@ -1,83 +1,84 @@
-# MemeCoinTradingBot
+# DexSignal
 
-MemeCoinTradingBot is a Python-based trading bot designed to monitor and analyze meme coins on decentralized exchanges. It uses various APIs to fetch token data, verify volume, check for rugpulls, and send alerts via Telegram.
+A private research tool that watches newly profiled tokens on
+[DexScreener](https://dexscreener.com), screens out obvious scams, keeps a
+price and liquidity history, and reports defined market observations to you.
 
-## Features
+> **Not financial advice.** DexSignal reports observations for private
+> research. It does not trade, hold keys, or move funds, and it should not be
+> used to broadcast buy or sell calls to others.
 
-- Fetches token data from DexScreener API
-- Filters tokens based on liquidity and blacklist
-- Verifies token volume using Pocket Universe API
-- Checks for rugpulls using RugCheck API
-- Saves token snapshots to SQLite database
-- Analyzes token price pumps
-- Sends alerts via Telegram
+## What it does each cycle
 
-## Requirements
+1. Fetches the latest token profiles from DexScreener.
+2. Looks up market data per chain in batches and keeps each token's most liquid pair.
+3. Skips tokens that are blacklisted, illiquid (below $50k), or show
+   suspicious volume (24h volume above 50 × liquidity).
+4. Screens Solana tokens with RugCheck. Any `danger`-level risk or a high risk
+   score rejects the token. Other chains are stored as "unscreened".
+5. Stores a snapshot. History is never overwritten.
+6. Over a 30-minute window, raises an observation when price rises 100% or
+   more (`RISE`), falls 50% or more (`FALL`), or liquidity falls 50% or more
+   (`LIQUIDITY_DROP`).
+7. Sends each new observation to your private Telegram chat, if configured.
+   The same observation is not repeated within 6 hours.
 
-- Python 3.7+
-- `requests` library
-- `pandas` library
-- `python-telegram-bot` library
-- SQLite
+Every threshold is configurable. The full behaviour, API contracts and
+acceptance criteria are in [docs/SPEC.md](docs/SPEC.md).
 
-## Installation
+## Install
 
-1. Clone the repository:
-    ```sh
-    git clone https://github.com/drayerh/MemeCoinTradingBot.git
-    cd MemeCoinTradingBot
-    ```
+Requires Python 3.10 or newer.
 
-2. Install the required Python packages:
-    ```sh
-    pip install -r requirements.txt
-    ```
+```sh
+git clone https://github.com/drayerh/DexScreenerMemeCoinTradingSignalBot.git
+cd DexScreenerMemeCoinTradingSignalBot
+python -m venv .venv && source .venv/bin/activate
+pip install -e '.[dotenv]'
+cp .env.example .env   # then fill in the Telegram pair, if wanted
+```
 
-3. Create a `.env` file in the project directory with the following content:
-    ```dotenv
-    TELEGRAM_TOKEN="your_telegram_token"
-    CHAT_ID="your_chat_id"
-    POCKET_UNIVERSE_API="https://api.pocketuniverse.ai/v1/verify"
-    RUGCHECK_API="https://api.rugcheck.xyz/v1/token"
-    DEXSCREENER_API="https://api.dexscreener.com/latest/dex"
-    ```
+## Use
 
-## Usage
+```sh
+dexsignal run                      # run every 5 minutes until Ctrl+C
+dexsignal once                     # run one cycle (exit code 1 if discovery failed)
+dexsignal stats                    # database counts
+dexsignal export snapshots -o snapshots.csv
+dexsignal export observations      # CSV to stdout
+dexsignal blacklist add solana <mint> --reason "known rug"
+dexsignal blacklist list
+dexsignal blacklist remove solana <mint>
+```
 
-1. Run the bot:
-    ```sh
-    python main.py
-    ```
-
-2. The bot will run in a loop, fetching and analyzing token data every 5 minutes.
+`python main.py` still works and runs `dexsignal run`.
 
 ## Configuration
 
-- `MIN_LIQUIDITY`: Minimum liquidity threshold for filtering tokens (default: 50000 USD)
-- `BLACKLIST_DB`: SQLite database file for storing blacklisted coins and developers (default: `blacklists.db`)
-- `TOKEN_DB`: SQLite database file for storing token snapshots (default: `token_data.db`)
+All settings are environment variables prefixed `DSB_`; see
+[.env.example](.env.example) and the table in [docs/SPEC.md](docs/SPEC.md).
+Telegram needs both `DSB_TELEGRAM_TOKEN` and `DSB_TELEGRAM_CHAT_ID`, or neither.
+Without them, observations are logged and stored only.
 
-## Professional Recommendations
+## Development
 
-### Infrastructure
+```sh
+pip install -e '.[dev]'
+ruff check . && ruff format --check .
+mypy src tests          # strict mode
+pytest                  # fails below 90% coverage
+```
 
-- Deploy on AWS Lambda with CloudWatch triggers
-- Use PostgreSQL instead of SQLite for production
-- Implement Redis caching for blacklists
+CI runs the same checks on Python 3.10 to 3.13 for every pull request.
 
-### Enhancements
+## Limitations
 
-- Add Uniswap/PancakeSwap direct pool monitoring
-- Implement machine learning-based pump detection
-- Add multi-chain support (EVM + Solana)
-- Integrate Tornado Cash monitoring
-
-### Security
-
-- Use AWS Secrets Manager for API keys
-- Implement IP whitelisting for Telegram webhooks
-- Add transaction simulation before alerts
+- RugCheck covers Solana only; other chains are not scam-screened.
+- The volume check is a heuristic for wash trading, not proof.
+- RugCheck's score scale is not documented in detail; review
+  `DSB_RUGCHECK_MAX_SCORE` against RugCheck's current documentation.
+- Provider APIs change. Malformed responses are skipped, not trusted.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT. See [LICENSE.md](LICENSE.md).
