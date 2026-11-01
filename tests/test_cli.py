@@ -111,9 +111,9 @@ def test_deployer_commands(env: Path, capsys: pytest.CaptureFixture[str]) -> Non
 
 def test_evaluate_command(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["evaluate"]) == 0
-    assert "BASELINE" in capsys.readouterr().out
+    assert "(baseline)" in capsys.readouterr().out
     assert cli.main(["evaluate", "--json"]) == 0
-    assert '"group": "BASELINE (all tokens)"' in capsys.readouterr().out
+    assert '"group": "ACCEPTED TOKENS from first sighting (baseline)"' in capsys.readouterr().out
 
 
 def test_health_command(env: Path, capsys: pytest.CaptureFixture[str]) -> None:

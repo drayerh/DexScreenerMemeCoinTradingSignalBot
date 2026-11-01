@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
 from .http import HttpClient
-from .models import Observation, PairSnapshot, TokenRef
+from .models import Observation, PairSnapshot, TokenRef, norm_address
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,15 @@ def parse_pair(raw: Any) -> PairSnapshot | None:
     )
 
 
+@dataclass
+class PairFetch:
+    """Pairs found, plus the tokens whose batch failed (so absence there means 'unknown',
+    not 'delisted'; review round 2, finding 2)."""
+
+    pairs: list[PairSnapshot] = field(default_factory=list)
+    failed: set[TokenRef] = field(default_factory=set)
+
+
 class DexScreenerClient:
     def __init__(self, http: HttpClient, base_url: str, batch_size: int) -> None:
         self._http = http
@@ -84,7 +94,7 @@ class DexScreenerClient:
                     refs.append(ref)
         return refs
 
-    def best_pairs(self, refs: Iterable[TokenRef]) -> list[PairSnapshot]:
+    def best_pairs(self, refs: Iterable[TokenRef]) -> PairFetch:
         """FR-2: batched lookups per chain; keep the most liquid pair per token."""
         ref_list = list(refs)
         by_chain: dict[str, list[str]] = {}
@@ -92,13 +102,17 @@ class DexScreenerClient:
             by_chain.setdefault(ref.chain_id, []).append(ref.token_address)
         wanted = {(r.chain_id, r.token_address.lower()) for r in ref_list}
         best: dict[tuple[str, str], PairSnapshot] = {}
+        failed: set[TokenRef] = set()
         for chain, addresses in by_chain.items():
             for batch in _chunks(addresses, self._batch):
                 url = f"{self._base}/tokens/v1/{quote(chain)}/{','.join(quote(a) for a in batch)}"
                 try:
                     data = self._http.get_json(url)
                 except Exception as exc:  # NFR-1: one failed batch never aborts the cycle
-                    log.warning("pair batch failed chain=%s size=%d error=%s", chain, len(batch), exc)
+                    log.warning(
+                        "pair batch failed chain=%s size=%d error=%s", chain, len(batch), type(exc).__name__
+                    )
+                    failed.update(TokenRef(chain, norm_address(a)) for a in batch)
                     continue
                 for raw in data if isinstance(data, list) else []:
                     snap = parse_pair(raw)
@@ -110,7 +124,7 @@ class DexScreenerClient:
                     current = best.get(key)
                     if current is None or snap.liquidity_usd > current.liquidity_usd:
                         best[key] = snap
-        return list(best.values())
+        return PairFetch(list(best.values()), failed)
 
 
 def format_observation(obs: Observation) -> str:

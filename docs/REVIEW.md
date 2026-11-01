@@ -47,3 +47,25 @@ Every finding has a disposition: **Implemented** in this change, or
 | 20 | Compliance | **Publication risk.** | Unchanged: private chat only, neutral wording, no buy/sell language. |
 | 21 | Red team | **Mixer-funded deployers** (e.g. Tornado Cash) are a strong red flag. | Deferred: requires transaction-graph tracing data. |
 | 22 | Red team | **ML before data.** | Deferred until several thousand labelled observations exist; `evaluate` provides the evidence base first. |
+
+## Round 2 — independent code review
+
+A separate reviewer, who had not seen the code being written, audited the
+implementation, ran simulations, and reported 12 findings plus two minor ones.
+All are regression-tested in `tests/test_review2.py`.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | High | Tracking stopped at exactly 24h, so the +24h measurement (and late observations' +6h/+24h) almost never had data under real timing. | Fixed: tracking lasts until the longest horizon plus tolerance (about 26.4h), and continues for any token with an observation whose outcomes are pending. Tested with a drifting clock. |
+| 2 | High | A rug where the pair vanishes or returns no price was labelled "not rugged". | Fixed: a tracked token absent from a successful lookup is recorded as a zero-liquidity, zero-price snapshot. Tokens in a failed batch are skipped as an outage. |
+| 3 | High | Accepted tokens bypassed later blacklisting, deployer blocks and re-screening forever. | Fixed: tracked tokens are still sampled, but raise no observations when blacklisted, deployer-blocked or rejected. Unscreened tokens are re-screened. Tokens outside tracking go through all filters again. |
+| 4 | High | `probe pocket` could print the API key in an error traceback. | Fixed: errors print only the exception type and HTTP status. |
+| 5 | Medium | URL-encoded keys and tracebacks escaped redaction. | Fixed: encoded variants are redacted, and tracebacks are rendered and redacted inside the filter. |
+| 6 | Medium | "Baseline (all tokens)" contained only accepted tokens, measured from a different token age than observations. | Partly: renamed to "accepted tokens from first sighting", with the age caveat printed in the report. An age-matched baseline and sampling of rejected tokens are deferred. |
+| 7 | Medium | Per-kind rug rates included rugs that happened before the observation. | Fixed: per-observation `rugged_after` uses only the liquidity path after the observation. |
+| 8 | Medium | Coverage denominators included outcomes not yet due; small-sample flag ignored per-horizon counts. | Fixed: only matured outcomes count; each horizon carries its own small-sample flag. |
+| 9 | Medium | Migrated v1 tokens carried v1's survivorship bias into labels and evaluation. | Fixed: backfilled tokens are marked `v1` and excluded from tracking, labelling and evaluation. Migration test now covers observations and blacklist. |
+| 10 | Medium | Unscreened results were never cached, so Etherscan and GoPlus were re-queried every cycle. | Fixed: unscreened results are reused for `DSB_NEGATIVE_TTL_MINUTES` (default 10); creator-only lookups for the full TTL. |
+| 11 | Low | Per-cycle labelling work grew with the database. | Fixed: queries bounded by the retention window; index on `observations(observed_at)`. |
+| 12 | Low | EVM address case differed between discovery and tracking, duplicating requests. | Fixed: references are normalised before de-duplication. |
+| — | Low | Holder-share scale guessed from the sum; non-list GoPlus fields raised errors. | Fixed: percentage scale assumed only when a single holder exceeds 1; non-list fields are ignored. |

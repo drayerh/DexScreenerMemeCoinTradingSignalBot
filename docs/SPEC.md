@@ -54,13 +54,13 @@ GoPlus flags are strings `"1"`/`"0"`. Anything else is **unknown**, never safe.
 | FR-9 De-duplication | The same observation kind for the same token is not reported again within `DSB_ALERT_COOLDOWN_MINUTES` (default 360). Every report is stored. |
 | FR-10 Notification | If Telegram credentials are set, each new observation is sent to one chat, labelled as a research observation and not financial advice. Without credentials, observations are logged only. Notification failure never stops the cycle. |
 | FR-11 CLI | `run`, `once`, `stats`, `export <table>`, `blacklist add/remove/list`, `deployer block/unblock/list`, `evaluate [--json]`, `health [--max-age-minutes]`, `probe [all | pocket <mint>]`. |
-| FR-12 Risk providers | Each applicable provider assesses a new token; results are appended to `risk_checks` with a timestamp (point-in-time) and reused within `DSB_SCREEN_TTL_MINUTES`. Unscreened results are always retried. Cheap local filters (FR-3 to FR-5) run first. |
+| FR-12 Risk providers | Each applicable provider assesses a new token; results are appended to `risk_checks` with a timestamp (point-in-time) and reused within `DSB_SCREEN_TTL_MINUTES`. Unscreened results are reused only within `DSB_NEGATIVE_TTL_MINUTES` (default 10), except creator-only lookups, which use the full TTL. Cheap local filters (FR-3 to FR-5) run first. |
 | FR-13 Verdict | Any REJECTED wins; otherwise PASSED if any provider passed; otherwise UNSCREENED. With `DSB_STRICT_SCREENING=true`, UNSCREENED is rejected. |
 | FR-14 Contract risk | GoPlus rejects EVM tokens with any danger flag, buy or sell tax above `DSB_MAX_TAX_PCT` (default 10%), or a creator with prior honeypots; Solana tokens with active mint, freeze, balance-mutation or close authority, or a malicious creator. A missing honeypot or authority status is UNSCREENED. |
 | FR-15 Concentration | Top-10 holder share, excluding locked holders, the pair address, burn addresses and pool or locker tags, above `DSB_MAX_TOP10_PCT` (default 50%) rejects the token. |
 | FR-16 Deployers | Creators from any provider are linked to tokens. A new token is rejected if its deployer is manually blocked, flagged malicious, or linked to at least `DSB_DEPLOYER_MAX_RUGS` (default 2) labelled rugs. Etherscan is queried only when no other provider returned a creator. |
-| FR-17 Tracking and labels | Accepted tokens are sampled every cycle for `DSB_TRACK_HOURS` (default 24) whatever their liquidity. Each observation gets forward price and liquidity changes at +1h, +6h and +24h (missing data recorded as a gap). Each token gets a rug label (liquidity falling `DSB_RUG_LIQ_DROP_PCT`, default 80%, from its peak within 24h) and baseline forward returns. |
-| FR-18 Evaluation | `evaluate` reports, for the baseline and each observation kind: sample size, coverage, median forward change, share up with Wilson 95% interval, and 24h rug rate; groups under 30 are flagged. |
+| FR-17 Tracking and labels | Accepted tokens are sampled every cycle until the longest horizon plus its tolerance has passed (at least `DSB_TRACK_HOURS`), and while any observation on them still needs outcome data, whatever their liquidity. A tracked token missing from a successful lookup is recorded as a zero snapshot (vanished pair); one in a failed batch is skipped. Tracked tokens that are blacklisted, deployer-blocked or rejected are sampled but raise no observations; unscreened ones are re-screened. Each observation gets forward price and liquidity changes at +1h, +6h and +24h (gaps recorded) and a post-observation rug flag. Each live token gets a rug label (liquidity falling `DSB_RUG_LIQ_DROP_PCT`, default 80%, from its peak within 24h) and forward returns from first sighting. Tokens migrated from v1 are excluded. |
+| FR-18 Evaluation | `evaluate` reports, for accepted tokens from first sighting (baseline) and each observation kind: sample size, coverage of matured outcomes, median forward change, share up with Wilson 95% interval, and rug rate (per observation, after the observation only); horizons and groups under 30 are flagged; the age difference between baseline and observations is stated. |
 
 ## 5. Non-functional requirements
 
@@ -106,4 +106,7 @@ Each maps to automated tests in `tests/`.
 10. Missing or unknown provider flags never produce PASSED (FR-14).
 11. A deployer with manual block, malicious flag or enough labelled rugs blocks new tokens (FR-16).
 12. Secrets never appear in logs (NFR-8).
-13. A v1 database migrates to v2 without data loss (NFR-7).
+13. A v1 database migrates to v2 without data loss; backfilled tokens are excluded from labels (NFR-7).
+14. The +24h horizon is measured under realistic, drifting cycle timing (FR-17).
+15. A vanished pair is labelled as a rug; a failed batch is not (FR-17).
+16. Blocks applied after acceptance stop observations but not sampling (FR-17).

@@ -147,9 +147,10 @@ def top_holder_share(holders: Any, pair_address: str) -> float | None:
             shares.append(share)
     if not shares:
         return 0.0
+    # GoPlus documents fractions (0.1 = 10%). A single holder above 1 can only be a
+    # percentage scale, so only then rescale (review round 2, low finding).
     total = sum(shares)
-    # GoPlus documents fractions (0.1 = 10%); tolerate a percentage scale defensively.
-    return total / 100 if total > 1.05 else total
+    return total / 100 if any(share > 1 for share in shares) else total
 
 
 # --- providers ------------------------------------------------------------------
@@ -180,7 +181,8 @@ class RugCheckProvider:
             "score_normalised": score,
             "lp_locked_pct": number(data.get("lpLockedPct")),
         }
-        risks = data.get("risks") or []
+        raw_risks = data.get("risks")
+        risks = raw_risks if isinstance(raw_risks, list) else []
         dangers = [
             str(r.get("name", "unnamed"))
             for r in risks
@@ -308,7 +310,8 @@ class GoPlusProvider:
             if flag(e.get(key)) is True:
                 reasons.append(f"goplus {key}")
         creators: list[Creator] = []
-        for c in e.get("creators") or []:
+        raw_creators = e.get("creators")
+        for c in raw_creators if isinstance(raw_creators, list) else []:
             if isinstance(c, Mapping) and c.get("address"):
                 malicious = flag(c.get("malicious_address"))
                 creators.append(Creator(str(c["address"]), malicious))
@@ -317,7 +320,12 @@ class GoPlusProvider:
         top10 = top_holder_share(e.get("holders"), snap.pair_address)
         if top10 is not None and top10 > self._max_top10:
             reasons.append(f"top-10 holders own {top10:.0%}")
-        burn = [number(d.get("burn_percent")) for d in e.get("dex") or [] if isinstance(d, Mapping)]
+        raw_dex = e.get("dex")
+        burn = [
+            number(d.get("burn_percent"))
+            for d in (raw_dex if isinstance(raw_dex, list) else [])
+            if isinstance(d, Mapping)
+        ]
         burn_known = [b for b in burn if b is not None]
         features: dict[str, Feature] = {
             "mintable": _tri(flag(e.get("mintable"))),

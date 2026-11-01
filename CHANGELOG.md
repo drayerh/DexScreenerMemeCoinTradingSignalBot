@@ -3,7 +3,8 @@
 ## 1.1.0
 
 Implements the expert review in `docs/REVIEW.md` (19 of 22 findings; 3 deferred
-with reasons).
+with reasons), then fixes all findings from an independent code review (round 2;
+one partly, with the remainder deferred).
 
 ### Added
 - GoPlus screening for EVM chains and Solana: honeypots, taxes, owner powers,
@@ -18,6 +19,13 @@ with reasons).
   secret redaction in all logs.
 - Schema v2 with an additive migration from v1.
 - `pip-audit` in CI, Dependabot, nightly provider probe, non-root Docker image.
+
+### Fixed after independent review (docs/REVIEW.md, round 2)
+- +24h outcomes now measured under real timing; vanished pairs counted as rugs.
+- Blocks applied after acceptance now stop observations; unscreened tokens re-screened.
+- `probe pocket` never prints the key; encoded keys and tracebacks are redacted.
+- Evaluation coverage, per-horizon small-sample flags and post-observation rug rates.
+- v1 backfill excluded from labels; negative caching; bounded labelling queries.
 
 ### Changed
 - RugCheck moved into the risk-provider framework; it now records `lpLockedPct`

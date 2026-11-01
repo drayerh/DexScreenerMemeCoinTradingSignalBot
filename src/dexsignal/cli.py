@@ -172,7 +172,13 @@ def _probe(settings: Settings, target: str, mint: str | None) -> int:
             method=settings.pocket_universe_method,
             param=settings.pocket_universe_param,
         )
-        print(json.dumps(pocket.raw(mint), indent=2, sort_keys=True))
+        try:
+            raw = pocket.raw(mint)
+        except Exception as exc:  # never print the URL: it contains the key (review round 2, finding 4)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            print(f"pocket universe request failed: {type(exc).__name__} status={status}", file=sys.stderr)
+            return 1
+        print(json.dumps(raw, indent=2, sort_keys=True))
         return 0
     results = probe_dexscreener(DexScreenerClient(http, settings.dexscreener_base_url, settings.batch_size))
     for provider in build_providers(settings, http):

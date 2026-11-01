@@ -93,6 +93,7 @@ class Settings:
     deployer_max_rugs: int = 2
     rug_liq_drop_pct: float = 80.0
     track_hours: int = 24
+    negative_ttl_minutes: int = 10
     log_format: str = "text"
 
     @property
@@ -163,6 +164,7 @@ class Settings:
             deployer_max_rugs=_get_int(e, "DSB_DEPLOYER_MAX_RUGS", d.deployer_max_rugs, minimum=1),
             rug_liq_drop_pct=_get_float(e, "DSB_RUG_LIQ_DROP_PCT", d.rug_liq_drop_pct),
             track_hours=_get_int(e, "DSB_TRACK_HOURS", d.track_hours, minimum=1),
+            negative_ttl_minutes=_get_int(e, "DSB_NEGATIVE_TTL_MINUTES", d.negative_ttl_minutes, minimum=1),
             log_format=_get_str(e, "DSB_LOG_FORMAT", d.log_format).lower(),
         )
         if bool(settings.telegram_token) != bool(settings.telegram_chat_id):

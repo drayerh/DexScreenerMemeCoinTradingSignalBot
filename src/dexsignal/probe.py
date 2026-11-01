@@ -35,7 +35,7 @@ def probe_dexscreener(client: DexScreenerClient) -> list[ProbeResult]:
         results.append(ProbeResult("dexscreener profiles", bool(refs), f"{len(refs)} tokens parsed"))
     except Exception as exc:
         results.append(ProbeResult("dexscreener profiles", False, type(exc).__name__))
-    pairs = client.best_pairs([TokenRef("ethereum", USDC_ETHEREUM)])
+    pairs = client.best_pairs([TokenRef("ethereum", USDC_ETHEREUM)]).pairs
     results.append(
         ProbeResult(
             "dexscreener pairs", bool(pairs), f"{len(pairs)} USDC pair parsed" if pairs else "no pair"

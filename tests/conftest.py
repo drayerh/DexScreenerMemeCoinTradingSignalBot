@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
@@ -7,6 +8,7 @@ import pytest
 
 from dexsignal.config import Settings
 from dexsignal.models import Observation, PairSnapshot, ScreenStatus, TokenRef
+from dexsignal.providers import PairFetch
 from dexsignal.risk import Creator, RiskAssessment
 from dexsignal.storage import Storage
 
@@ -27,6 +29,7 @@ class FakeClock:
 class FakeMarket:
     def __init__(self) -> None:
         self.pairs: list[PairSnapshot] = []
+        self.failed: set[TokenRef] = set()
         self.fail_discovery = False
 
     def latest_tokens(self) -> list[TokenRef]:
@@ -34,8 +37,8 @@ class FakeMarket:
             raise RuntimeError("down")
         return [TokenRef(p.chain_id, p.token_address) for p in self.pairs]
 
-    def best_pairs(self, refs: list[TokenRef]) -> list[PairSnapshot]:
-        return list(self.pairs)
+    def best_pairs(self, refs: list[TokenRef]) -> PairFetch:
+        return PairFetch(list(self.pairs), set(self.failed))
 
 
 class FakeProvider:
@@ -101,3 +104,13 @@ def storage() -> Iterator[Storage]:
 @pytest.fixture
 def settings() -> Settings:
     return Settings()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logging() -> Iterator[None]:
+    """The CLI replaces root handlers; restore them so later tests never log to a closed stream."""
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)

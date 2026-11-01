@@ -12,7 +12,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TextIO
 
-from .models import Observation, ObservationKind, PairSnapshot, ScreenResult, ScreenStatus, TokenRef
+from .models import (
+    Observation,
+    ObservationKind,
+    PairSnapshot,
+    ScreenResult,
+    ScreenStatus,
+    TokenRef,
+    norm_address,
+)
 from .risk import Creator, RiskAssessment
 
 SCHEMA_VERSION = 2
@@ -70,9 +78,11 @@ CREATE TABLE IF NOT EXISTS tokens (
     token_address TEXT NOT NULL,
     symbol TEXT NOT NULL,
     first_seen TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'live',
     PRIMARY KEY (chain_id, token_address)
 );
 CREATE INDEX IF NOT EXISTS ix_tokens_first_seen ON tokens (first_seen);
+CREATE INDEX IF NOT EXISTS ix_observations_time ON observations (observed_at);
 CREATE TABLE IF NOT EXISTS risk_checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chain_id TEXT NOT NULL,
@@ -110,6 +120,7 @@ CREATE TABLE IF NOT EXISTS observation_outcomes (
     price_change_pct REAL,
     liquidity_change_pct REAL,
     measured_at TEXT,
+    rugged_after INTEGER,
     PRIMARY KEY (observation_id, horizon_minutes)
 );
 CREATE TABLE IF NOT EXISTS token_labels (
@@ -143,9 +154,7 @@ def _iso(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
-def _norm(address: str) -> str:
-    """EVM addresses are case-insensitive; Solana mints are not. Normalise only 0x-hex."""
-    return address.lower() if address.startswith("0x") else address
+_norm = norm_address
 
 
 @dataclass(frozen=True)
@@ -172,10 +181,12 @@ class Storage:
         version = int(row["value"]) if row else 0
         if version < 2:
             self._conn.executescript(_SCHEMA_V2)
-            # Backfill first-seen times for tokens recorded before v2.
+            # Backfill tokens recorded before v2. They are marked 'v1' and excluded from
+            # labelling and evaluation: v1 only stored tokens while they passed the
+            # filters, so their history has survivorship bias (review round 2, finding 9).
             self._conn.execute(
-                "INSERT OR IGNORE INTO tokens (chain_id, token_address, symbol, first_seen)"
-                " SELECT chain_id, token_address, MIN(symbol), MIN(observed_at) FROM snapshots"
+                "INSERT OR IGNORE INTO tokens (chain_id, token_address, symbol, first_seen, source)"
+                " SELECT chain_id, token_address, MIN(symbol), MIN(observed_at), 'v1' FROM snapshots"
                 " GROUP BY chain_id, token_address"
             )
         self._conn.execute(
@@ -371,12 +382,35 @@ class Storage:
         ).fetchone()
         return row is not None
 
-    def tracked_tokens(self, first_seen_after: datetime) -> list[TokenRef]:
+    def tracked_tokens(self, first_seen_after: datetime, observed_after: datetime) -> list[TokenRef]:
+        """Live tokens still inside their tracking window, plus any token with a recent
+        observation whose forward outcomes still need data (review round 2, finding 1)."""
         rows = self._conn.execute(
-            "SELECT chain_id, token_address FROM tokens WHERE first_seen >= ? ORDER BY first_seen",
-            (_iso(first_seen_after),),
+            "SELECT chain_id, token_address FROM tokens WHERE source = 'live' AND first_seen >= ?"
+            " UNION SELECT chain_id, token_address FROM observations WHERE observed_at >= ?",
+            (_iso(first_seen_after), _iso(observed_after)),
         ).fetchall()
         return [TokenRef(r["chain_id"], r["token_address"]) for r in rows]
+
+    def symbol_of(self, chain_id: str, address: str) -> str:
+        row = self._conn.execute(
+            "SELECT symbol FROM tokens WHERE chain_id = ? AND token_address = ?", (chain_id, _norm(address))
+        ).fetchone()
+        return "?" if row is None else str(row["symbol"])
+
+    def latest_screen(self, chain_id: str, address: str) -> ScreenStatus | None:
+        row = self._conn.execute(
+            "SELECT status FROM screenings WHERE chain_id = ? AND token_address = ?",
+            (chain_id, _norm(address)),
+        ).fetchone()
+        return None if row is None else ScreenStatus(row["status"])
+
+    def deployers_of(self, chain_id: str, address: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT deployer FROM token_deployers WHERE chain_id = ? AND token_address = ?",
+            (chain_id, _norm(address)),
+        ).fetchall()
+        return [str(r["deployer"]) for r in rows]
 
     # --- v2: point-in-time risk checks (REVIEW finding 4) ----------------------
     def add_risk(self, chain_id: str, address: str, a: RiskAssessment, now: datetime) -> None:
@@ -396,15 +430,27 @@ class Storage:
         )
 
     def latest_risk(
-        self, chain_id: str, address: str, provider: str, not_before: datetime
+        self,
+        chain_id: str,
+        address: str,
+        provider: str,
+        not_before: datetime,
+        unscreened_not_before: datetime,
     ) -> RiskAssessment | None:
+        """Latest cached assessment. UNSCREENED results are reused only for a shorter
+        window, so outages are retried soon without hammering providers (finding 10)."""
         row = self._conn.execute(
             "SELECT * FROM risk_checks WHERE chain_id = ? AND token_address = ? AND provider = ?"
             " AND checked_at >= ? ORDER BY checked_at DESC, id DESC LIMIT 1",
-            (chain_id, _norm(address), provider, _iso(not_before)),
+            (chain_id, _norm(address), provider, _iso(min(not_before, unscreened_not_before))),
         ).fetchone()
-        if row is None or row["status"] == ScreenStatus.UNSCREENED.value:
-            return None  # always retry unscreened results
+        if row is None:
+            return None
+        checked = datetime.fromisoformat(row["checked_at"])
+        if row["status"] == ScreenStatus.UNSCREENED.value and checked < unscreened_not_before:
+            return None
+        if row["status"] != ScreenStatus.UNSCREENED.value and checked < not_before:
+            return None
         return RiskAssessment(
             provider=row["provider"],
             status=ScreenStatus(row["status"]),
@@ -496,15 +542,16 @@ class Storage:
             for r in rows
         ]
 
-    def pending_outcomes(self, now: datetime) -> list[tuple[int, str, str, datetime, int]]:
-        """(observation id, chain, token, observed_at, horizon) whose horizon has passed and is unlabelled."""
+    def pending_outcomes(self, now: datetime, oldest: datetime) -> list[tuple[int, str, str, datetime, int]]:
+        """(observation id, chain, token, observed_at, horizon) whose horizon has passed and is
+        unlabelled. Bounded by ``oldest`` so work does not grow with the database (finding 11)."""
         pending: list[tuple[int, str, str, datetime, int]] = []
         for horizon in HORIZONS_MINUTES:
             rows = self._conn.execute(
                 "SELECT o.id, o.chain_id, o.token_address, o.observed_at FROM observations o"
-                " WHERE o.observed_at <= ? AND NOT EXISTS (SELECT 1 FROM observation_outcomes oc"
-                " WHERE oc.observation_id = o.id AND oc.horizon_minutes = ?)",
-                (_iso(now - timedelta(minutes=horizon)), horizon),
+                " WHERE o.observed_at <= ? AND o.observed_at >= ? AND NOT EXISTS (SELECT 1"
+                " FROM observation_outcomes oc WHERE oc.observation_id = o.id AND oc.horizon_minutes = ?)",
+                (_iso(now - timedelta(minutes=horizon)), _iso(oldest), horizon),
             ).fetchall()
             pending.extend(
                 (
@@ -525,24 +572,29 @@ class Storage:
         price_change: float | None,
         liquidity_change: float | None,
         measured_at: datetime | None,
+        *,
+        rugged_after: bool | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO observation_outcomes VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO observation_outcomes VALUES (?, ?, ?, ?, ?, ?)",
             (
                 observation_id,
                 horizon,
                 price_change,
                 liquidity_change,
                 None if measured_at is None else _iso(measured_at),
+                None if rugged_after is None else int(rugged_after),
             ),
         )
 
-    def unlabelled_tokens(self, first_seen_before: datetime) -> list[tuple[str, str, datetime]]:
+    def unlabelled_tokens(
+        self, first_seen_before: datetime, oldest: datetime
+    ) -> list[tuple[str, str, datetime]]:
         rows = self._conn.execute(
-            "SELECT t.chain_id, t.token_address, t.first_seen FROM tokens t WHERE t.first_seen <= ?"
-            " AND NOT EXISTS (SELECT 1 FROM token_labels l WHERE l.chain_id = t.chain_id"
-            " AND l.token_address = t.token_address)",
-            (_iso(first_seen_before),),
+            "SELECT t.chain_id, t.token_address, t.first_seen FROM tokens t WHERE t.source = 'live'"
+            " AND t.first_seen <= ? AND t.first_seen >= ? AND NOT EXISTS (SELECT 1 FROM token_labels l"
+            " WHERE l.chain_id = t.chain_id AND l.token_address = t.token_address)",
+            (_iso(first_seen_before), _iso(oldest)),
         ).fetchall()
         return [(r["chain_id"], r["token_address"], datetime.fromisoformat(r["first_seen"])) for r in rows]
 
@@ -577,11 +629,14 @@ class Storage:
     def outcome_rows(self) -> list[dict[str, object]]:
         rows = self._conn.execute(
             "SELECT o.id AS obs_id, o.kind, o.chain_id, o.token_address, oc.horizon_minutes,"
-            " oc.price_change_pct, oc.liquidity_change_pct, tl.rugged FROM observations o"
+            " oc.price_change_pct, oc.liquidity_change_pct, oc.rugged_after FROM observations o"
             " LEFT JOIN observation_outcomes oc ON oc.observation_id = o.id"
-            " LEFT JOIN token_labels tl ON tl.chain_id = o.chain_id AND tl.token_address = o.token_address"
         ).fetchall()
         return [dict(r) for r in rows]
 
     def label_rows(self) -> list[dict[str, object]]:
-        return [dict(r) for r in self._conn.execute("SELECT * FROM token_labels").fetchall()]
+        rows = self._conn.execute(
+            "SELECT l.* FROM token_labels l JOIN tokens t ON t.chain_id = l.chain_id"
+            " AND t.token_address = l.token_address WHERE t.source = 'live'"
+        ).fetchall()
+        return [dict(r) for r in rows]

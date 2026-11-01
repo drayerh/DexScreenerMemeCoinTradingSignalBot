@@ -84,8 +84,9 @@ def test_best_pairs_batches_per_chain_and_keeps_most_liquid() -> None:
         TokenRef("solana", "C"),
         TokenRef("base", "0xD"),
     ]
-    pairs = DexScreenerClient(http(), DS, 2).best_pairs(refs)
-    by_token = {p.token_address: p.liquidity_usd for p in pairs}
+    fetch = DexScreenerClient(http(), DS, 2).best_pairs(refs)
+    by_token = {p.token_address: p.liquidity_usd for p in fetch.pairs}
+    assert fetch.failed == {TokenRef("base", "0xd")}
     assert by_token == {"A": 99, "B": 5, "C": 7}  # AC-6 batching; AC-4 failed batch skipped
     assert len(responses.calls) == 3
 

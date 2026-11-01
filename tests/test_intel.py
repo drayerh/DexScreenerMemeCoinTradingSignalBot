@@ -102,8 +102,8 @@ def test_outcome_labels_measured_and_missing(storage: Storage, settings: Setting
     # No further data: the 6h and 24h horizons become explicit gaps, not silent omissions.
     market.pairs = []
     clock.advance(60 * 26)
-    assert label_outcomes(storage, clock()) == 2  # 6h and 24h recorded as gaps
-    assert label_outcomes(storage, clock()) == 0  # idempotent
+    assert label_outcomes(storage, clock(), 80, T0) == 2  # 6h and 24h recorded as gaps
+    assert label_outcomes(storage, clock(), 80, T0) == 0  # idempotent
     rows = {r["horizon_minutes"]: r for r in storage.outcome_rows()}
     assert rows[1440]["price_change_pct"] is None
 
@@ -117,10 +117,10 @@ def test_evaluate_reports_baseline_and_kinds(storage: Storage, settings: Setting
     clock.advance(60 * 27)
     p.run_cycle()
     groups = evaluate(storage)
-    assert groups[0].group.startswith("BASELINE") and groups[0].n == 1
+    assert groups[0].group.startswith("ACCEPTED TOKENS") and groups[0].n == 1
     assert groups[1].group == "RISE" and groups[1].small_sample
     text = render(groups)
-    assert "Wilson 95%" in text and "rugged within 24h" in text
+    assert "Wilson 95%" in text and "rug rate" in text
     assert to_dicts(groups)[1]["group"] == "RISE"
 
 
@@ -139,7 +139,7 @@ def test_wilson_interval() -> None:
 def test_label_tokens_with_single_point_is_unknown(storage: Storage) -> None:
     storage.register_token(snap(), T0)
     storage.add_snapshot(snap(), T0)
-    assert label_tokens(storage, T0 + timedelta(hours=27), 80) == 1
+    assert label_tokens(storage, T0 + timedelta(hours=27), 80, T0) == 1
     assert storage.label_rows()[0]["rugged"] is None
 
 
