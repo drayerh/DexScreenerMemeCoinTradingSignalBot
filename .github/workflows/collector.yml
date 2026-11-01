@@ -1,0 +1,90 @@
+name: Continuous collector
+
+# Runs the bot in back-to-back shifts of about 5h40m (GitHub stops jobs at 6h).
+# The database is restored from the previous shift's cache at the start and saved
+# at the end, so research data accumulates across shifts. Gaps between shifts
+# are typically 10-30 minutes; cycles are timestamped, so gaps are visible.
+on:
+  schedule:
+    - cron: "7 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two shifts against the same database.
+concurrency:
+  group: collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      DSB_DATABASE_PATH: data/dexsignal.db
+      DSB_RETENTION_DAYS: "14"
+      DSB_LOG_FORMAT: json
+      DSB_GOPLUS_TOKEN: ${{ secrets.DSB_GOPLUS_TOKEN }}
+      DSB_ETHERSCAN_API_KEY: ${{ secrets.DSB_ETHERSCAN_API_KEY }}
+      DSB_POCKET_UNIVERSE_BASE_URL: ${{ secrets.DSB_POCKET_UNIVERSE_BASE_URL }}
+      DSB_POCKET_UNIVERSE_API_KEY: ${{ secrets.DSB_POCKET_UNIVERSE_API_KEY }}
+      DSB_TELEGRAM_TOKEN: ${{ secrets.DSB_TELEGRAM_TOKEN }}
+      DSB_TELEGRAM_CHAT_ID: ${{ secrets.DSB_TELEGRAM_CHAT_ID }}
+      SHIFT_SECONDS: "20400" # 5h40m
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Restore database from the previous shift
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: collector-db-${{ github.run_id }}
+          restore-keys: collector-db-
+      - name: Collect
+        run: |
+          mkdir -p data
+          dexsignal stats | sed 's/^/start /'
+          end=$((SECONDS + SHIFT_SECONDS))
+          while [ "$SECONDS" -lt "$end" ]; do
+            rc=0
+            timeout --signal=TERM --kill-after=120 $((end - SECONDS)) dexsignal run || rc=$?
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 0 ]; then break; fi
+            echo "dexsignal exited with $rc; restarting in 60 s"
+            sleep 60
+          done
+      - name: Checkpoint database
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sqlite3
+          path = os.environ["DSB_DATABASE_PATH"]
+          if os.path.exists(path):
+              conn = sqlite3.connect(path)
+              conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+              assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+              conn.close()
+          PY
+      - name: Save database for the next shift
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: collector-db-${{ github.run_id }}
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo '## Stats'; echo '```'; dexsignal stats; echo '```'
+            echo '## Evaluate'; echo '```'; dexsignal evaluate; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Back up database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dexsignal-db-${{ github.run_id }}
+          path: data/dexsignal.db
+          retention-days: 7

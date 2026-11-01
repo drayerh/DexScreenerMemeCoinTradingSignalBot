@@ -99,6 +99,23 @@ deployer list; the database and CSV exports are attached to the run. Each run
 starts with an empty database, so it suits checks and short samples, not the
 24-hour outcome labels.
 
+## Continuous collection on GitHub
+
+The **Continuous collector** workflow runs the bot nonstop in shifts of about
+5 hours 40 minutes, starting every 6 hours. Each shift restores the database
+left by the previous one, so the history, outcome labels and `evaluate` build
+up over days. Each shift's summary shows `stats` and `evaluate`, and the
+database is attached as a backup for 7 days.
+
+- Data older than 14 days is pruned; there is a short gap (usually 10-30
+  minutes) between shifts.
+- Add `DSB_TELEGRAM_TOKEN` and `DSB_TELEGRAM_CHAT_ID` as repository secrets to
+  receive observations on Telegram.
+- The repository is public, so the attached database backups can be downloaded
+  by any signed-in GitHub user. Secrets are never stored in it.
+- GitHub pauses scheduled workflows after 60 days without repository activity;
+  re-enable it from the Actions tab if that happens.
+
 ## Docker
 
 ```sh
