@@ -25,3 +25,17 @@ wheels/
 *.egg
 
 # PyInstaller
+
+# Project
+.idea/
+.vscode/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+*.csv
+.coverage
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

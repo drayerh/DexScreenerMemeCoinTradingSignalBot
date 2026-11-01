@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dexsignal"
+version = "1.0.0"
+description = "Private research tool for DexScreener token observations. Not financial advice."
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.10"
+dependencies = ["requests>=2.32,<3"]
+
+[project.optional-dependencies]
+dotenv = ["python-dotenv>=1.0"]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "responses>=0.25",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-requests>=2.32",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+dexsignal = "dexsignal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dexsignal = ["py.typed"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "PL"]
+ignore = ["PLR0913", "PLR2004", "PLR0911", "PLR0912", "S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "PLR", "SIM"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["dotenv"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=dexsignal --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = true
+source = ["dexsignal"]
