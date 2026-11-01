@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `Continuous collector` workflow: runs the bot nonstop in 6-hourly shifts on
+  GitHub, carrying the database between shifts.
+
 ## 1.2.0
 
 Fixes the first live run, in which every token was filtered out (SPEC section 8).
