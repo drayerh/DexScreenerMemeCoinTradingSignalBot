@@ -1,6 +1,6 @@
 # DexSignal — Specification
 
-Version 1.0 · Status: implemented by this branch
+Version 1.1 · Status: implemented. Changes from 1.0 follow the expert review in [REVIEW.md](REVIEW.md).
 
 ## 1. Purpose
 
@@ -16,12 +16,8 @@ holds no keys and moves no funds.
 
 - Executing trades or connecting to wallets.
 - Publishing signals to public channels. Notifications go to one private chat.
-- Developer-wallet blacklisting. DexScreener does not expose deployer wallets,
-  and RugCheck's full-report schema is undocumented, so a reliable mapping is
-  not possible today. Token and pair blacklists are supported instead.
-- Third-party "volume authenticity" services. The previous Pocket Universe
-  integration was removed: its API contract could not be verified. Volume
-  sanity is checked with documented internal heuristics (FR-5).
+- Funding-source (mixer) tracing of deployers. Needs transaction-graph data (REVIEW finding 21).
+- Machine-learning classifiers before enough labelled data exists (REVIEW finding 22).
 
 ## 3. External contracts
 
@@ -36,6 +32,12 @@ crash the run).
 | DexScreener | `GET /tokens/v1/{chainId}/{addresses}` (comma-separated) | `chainId`, `dexId`, `pairAddress`, `baseToken.address`, `baseToken.symbol`, `priceUsd` (string), `liquidity.usd`, `volume.h24`, `pairCreatedAt` |
 | RugCheck | `GET /v1/tokens/{mint}/report/summary` (Solana mints only) | `score_normalised`, `risks[].level`, `risks[].name` |
 | Telegram Bot API | `POST /bot{token}/sendMessage` | `ok` |
+| GoPlus | `GET /api/v1/token_security/{chain_id}?contract_addresses=` (EVM) | `is_honeypot`, `cannot_sell_all`, `owner_change_balance`, `hidden_owner`, `transfer_pausable`, `can_take_back_ownership`, `is_airdrop_scam`, `fake_token`, `selfdestruct`, `sell_tax`, `buy_tax`, `honeypot_with_same_creator`, `creator_address`, `holders[]` |
+| GoPlus | `GET /api/v1/solana/token_security?contract_addresses=` | `mintable`, `freezable`, `balance_mutable_authority`, `closable`, `creators[].malicious_address`, `holders[]`, `dex[].burn_percent` |
+| Etherscan V2 | `GET /v2/api?module=contract&action=getcontractcreation` (key required) | `result[].contractCreator` |
+| Pocket Universe | `/rug_check/{api_key}` (method and parameter configurable; undocumented) | `status`, `is_scam`, `message`, `rug_percent`, `fresh_percent` |
+
+GoPlus flags are strings `"1"`/`"0"`. Anything else is **unknown**, never safe.
 
 ## 4. Functional requirements
 
@@ -51,7 +53,14 @@ crash the run).
 | FR-8 Observations | Using snapshots inside a trailing window of `DSB_WINDOW_MINUTES` (default 30), ordered oldest to newest, with at least `DSB_MIN_POINTS` (default 3) points: `RISE` when price change ≥ `DSB_RISE_PCT` (default +100%); `FALL` when price change ≤ −`DSB_FALL_PCT` (default 50%); `LIQUIDITY_DROP` when liquidity change ≤ −`DSB_LIQ_DROP_PCT` (default 50%). |
 | FR-9 De-duplication | The same observation kind for the same token is not reported again within `DSB_ALERT_COOLDOWN_MINUTES` (default 360). Every report is stored. |
 | FR-10 Notification | If Telegram credentials are set, each new observation is sent to one chat, labelled as a research observation and not financial advice. Without credentials, observations are logged only. Notification failure never stops the cycle. |
-| FR-11 CLI | `dexsignal run` (loop), `dexsignal once`, `dexsignal export` (CSV of snapshots or observations), `dexsignal blacklist add/remove/list`, `dexsignal stats`. |
+| FR-11 CLI | `run`, `once`, `stats`, `export <table>`, `blacklist add/remove/list`, `deployer block/unblock/list`, `evaluate [--json]`, `health [--max-age-minutes]`, `probe [all | pocket <mint>]`. |
+| FR-12 Risk providers | Each applicable provider assesses a new token; results are appended to `risk_checks` with a timestamp (point-in-time) and reused within `DSB_SCREEN_TTL_MINUTES`. Unscreened results are always retried. Cheap local filters (FR-3 to FR-5) run first. |
+| FR-13 Verdict | Any REJECTED wins; otherwise PASSED if any provider passed; otherwise UNSCREENED. With `DSB_STRICT_SCREENING=true`, UNSCREENED is rejected. |
+| FR-14 Contract risk | GoPlus rejects EVM tokens with any danger flag, buy or sell tax above `DSB_MAX_TAX_PCT` (default 10%), or a creator with prior honeypots; Solana tokens with active mint, freeze, balance-mutation or close authority, or a malicious creator. A missing honeypot or authority status is UNSCREENED. |
+| FR-15 Concentration | Top-10 holder share, excluding locked holders, the pair address, burn addresses and pool or locker tags, above `DSB_MAX_TOP10_PCT` (default 50%) rejects the token. |
+| FR-16 Deployers | Creators from any provider are linked to tokens. A new token is rejected if its deployer is manually blocked, flagged malicious, or linked to at least `DSB_DEPLOYER_MAX_RUGS` (default 2) labelled rugs. Etherscan is queried only when no other provider returned a creator. |
+| FR-17 Tracking and labels | Accepted tokens are sampled every cycle for `DSB_TRACK_HOURS` (default 24) whatever their liquidity. Each observation gets forward price and liquidity changes at +1h, +6h and +24h (missing data recorded as a gap). Each token gets a rug label (liquidity falling `DSB_RUG_LIQ_DROP_PCT`, default 80%, from its peak within 24h) and baseline forward returns. |
+| FR-18 Evaluation | `evaluate` reports, for the baseline and each observation kind: sample size, coverage, median forward change, share up with Wilson 95% interval, and 24h rug rate; groups under 30 are flagged. |
 
 ## 5. Non-functional requirements
 
@@ -63,7 +72,10 @@ crash the run).
 | NFR-4 Shutdown | SIGINT and SIGTERM finish the current cycle step and exit cleanly. |
 | NFR-5 Observability | Structured log lines per cycle: tokens discovered, accepted, rejected by reason, snapshots written, observations raised, duration. |
 | NFR-6 Quality gates | `ruff` clean, `mypy --strict` clean, test coverage ≥ 90%, CI on Python 3.10 to 3.13. |
-| NFR-7 Storage | SQLite in WAL mode with indexes on `(chain_id, token_address, observed_at)`. Schema is versioned. |
+| NFR-7 Storage | SQLite in WAL mode with indexes on `(chain_id, token_address, observed_at)`. Schema is versioned with additive migrations (v1 to v2). |
+| NFR-8 Redaction | Every configured secret is removed from every log line, whatever its source. |
+| NFR-9 Liveness | Each cycle records a heartbeat; `health` exits non-zero when the last successful cycle is older than the limit. |
+| NFR-10 Supply chain | `pip-audit` in CI; Dependabot for Python packages and GitHub Actions; nightly provider probe. |
 
 ## 6. Data model
 
@@ -71,7 +83,12 @@ crash the run).
 - `screenings(chain_id, token_address, status, reason, checked_at)` — latest result per token.
 - `observations(id, chain_id, token_address, symbol, kind, change_pct, window_minutes, observed_at, notified)`
 - `blacklist(chain_id, token_address, reason, added_at)`
-- `meta(key, value)` — holds `schema_version`.
+- `meta(key, value)` — holds `schema_version` and heartbeat times.
+- `tokens(chain_id, token_address, symbol, first_seen)` — first sighting; drives tracking.
+- `risk_checks(id, chain_id, token_address, provider, status, reasons, features, creators, checked_at)` — append-only.
+- `deployers(chain_id, address, first_seen, malicious, manual_block, reason)` and `token_deployers(chain_id, token_address, deployer, source, first_seen)`.
+- `observation_outcomes(observation_id, horizon_minutes, price_change_pct, liquidity_change_pct, measured_at)`.
+- `token_labels(chain_id, token_address, first_seen, peak_liquidity_usd, trough_after_peak_usd, rugged, ret_60, ret_360, ret_1440, labelled_at)`.
 
 ## 7. Acceptance criteria
 
@@ -85,3 +102,8 @@ Each maps to automated tests in `tests/`.
 6. Requests are batched per chain at the configured size (FR-2).
 7. Notification failures are logged and the observation is still stored (FR-10).
 8. Missing Telegram credentials disable notification without errors (FR-10).
+9. A collapsing tracked token is still sampled below the liquidity floor and receives a rug label (FR-17).
+10. Missing or unknown provider flags never produce PASSED (FR-14).
+11. A deployer with manual block, malicious flag or enough labelled rugs blocks new tokens (FR-16).
+12. Secrets never appear in logs (NFR-8).
+13. A v1 database migrates to v2 without data loss (NFR-7).

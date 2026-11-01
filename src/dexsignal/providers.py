@@ -1,4 +1,4 @@
-"""Clients for DexScreener, RugCheck and Telegram (see SPEC section 3)."""
+"""Clients for DexScreener and Telegram (see SPEC section 3). Risk providers live in risk.py."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .http import HttpClient
-from .models import Observation, PairSnapshot, ScreenResult, ScreenStatus, TokenRef
+from .models import Observation, PairSnapshot, TokenRef
 
 log = logging.getLogger(__name__)
 
@@ -111,40 +111,6 @@ class DexScreenerClient:
                     if current is None or snap.liquidity_usd > current.liquidity_usd:
                         best[key] = snap
         return list(best.values())
-
-
-class RugCheckClient:
-    """FR-6: Solana-only screening via the public summary endpoint."""
-
-    def __init__(self, http: HttpClient, base_url: str, max_score: int) -> None:
-        self._http = http
-        self._base = base_url
-        self._max_score = max_score
-
-    @staticmethod
-    def supports(chain_id: str) -> bool:
-        return chain_id == "solana"
-
-    def screen(self, mint: str) -> ScreenResult:
-        try:
-            data = self._http.get_json(f"{self._base}/v1/tokens/{quote(mint)}/report/summary")
-        except Exception as exc:
-            log.warning("rugcheck unavailable mint=%s error=%s", mint, exc)
-            return ScreenResult(ScreenStatus.UNSCREENED, "rugcheck unavailable")
-        if not isinstance(data, dict):
-            return ScreenResult(ScreenStatus.UNSCREENED, "rugcheck malformed response")
-        risks = data.get("risks") or []
-        dangers = [
-            str(r.get("name", "unnamed"))
-            for r in risks
-            if isinstance(r, dict) and str(r.get("level", "")).lower() == "danger"
-        ]
-        if dangers:
-            return ScreenResult(ScreenStatus.REJECTED, "danger: " + ", ".join(dangers)[:200])
-        score = data.get("score_normalised")
-        if isinstance(score, (int, float)) and not isinstance(score, bool) and score > self._max_score:
-            return ScreenResult(ScreenStatus.REJECTED, f"score_normalised {score} > {self._max_score}")
-        return ScreenResult(ScreenStatus.PASSED)
 
 
 def format_observation(obs: Observation) -> str:
