@@ -14,7 +14,7 @@ from dexsignal.logsetup import JsonFormatter, RedactingFilter
 from dexsignal.models import ObservationKind, ScreenStatus
 from dexsignal.pipeline import Pipeline
 from dexsignal.risk import Creator
-from dexsignal.storage import Storage
+from dexsignal.storage import SCHEMA_VERSION, Storage
 
 from .conftest import T0, FakeClock, FakeMarket, FakeNotifier, FakeProvider, snap
 
@@ -170,7 +170,7 @@ def test_migration_from_v1(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
     s = Storage(db)
-    assert s.schema_version() == 2
+    assert s.schema_version() == SCHEMA_VERSION
     assert s.is_known("solana", "Old1")
     s.close()
 

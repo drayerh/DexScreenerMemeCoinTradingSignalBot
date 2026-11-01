@@ -148,7 +148,8 @@ def test_probe_pocket_prints_raw(
 
 
 def _mock_providers_ok() -> None:
-    responses.get(f"{DS}/token-profiles/latest/v1", json=[{"chainId": "solana", "tokenAddress": "A"}])
+    for path in ("token-profiles/latest", "token-boosts/latest", "token-boosts/top"):
+        responses.get(f"{DS}/{path}/v1", json=[{"chainId": "solana", "tokenAddress": "A"}])
     responses.get(
         f"{DS}/tokens/v1/ethereum/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
         json=[
@@ -183,7 +184,7 @@ def test_probe_all_ok(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest
     _mock_providers_ok()
     assert cli.main(["probe"]) == 0
     out = capsys.readouterr().out
-    assert out.count("OK  ") == 6 and "FAIL" not in out
+    assert out.count("OK  ") == 8 and "FAIL" not in out
 
 
 @responses.activate

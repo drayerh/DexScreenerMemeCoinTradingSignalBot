@@ -80,7 +80,7 @@ def build_pipeline(settings: Settings, storage: Storage) -> Pipeline:
     return Pipeline(
         settings,
         storage,
-        DexScreenerClient(http, settings.dexscreener_base_url, settings.batch_size),
+        DexScreenerClient(http, settings.dexscreener_base_url, settings.batch_size, settings.discovery_feeds),
         build_providers(settings, http),
         notifier,
     )

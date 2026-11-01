@@ -10,7 +10,9 @@ price and liquidity history, and reports defined market observations to you.
 
 ## What it does each cycle
 
-1. Fetches the latest token profiles from DexScreener.
+1. Fetches new tokens from DexScreener: latest profiles, latest boosts and top boosts.
+   Tokens with no pool or too little liquidity yet go on a watchlist and are
+   rechecked every cycle for 6 hours, so they are picked up once they qualify.
 2. Looks up market data per chain in batches and keeps each token's most liquid pair.
 3. Skips tokens that are blacklisted, illiquid (below $50k), or show
    suspicious volume (24h volume above 50 × liquidity).
@@ -87,6 +89,15 @@ fields, but not its HTTP method, parameter name or API host. Set
 `dexsignal probe pocket <mint>`, and confirm the response shape before relying
 on it. Adjust `DSB_POCKET_UNIVERSE_METHOD` and `DSB_POCKET_UNIVERSE_PARAM` if
 needed. The key is part of the URL, so it is redacted from all logs.
+
+## Live run on GitHub
+
+The **Live research run** workflow runs the bot against the live APIs on a
+GitHub runner. Start it from the Actions tab (choose the number of cycles; up
+to 60, five minutes apart). The summary shows `stats`, `evaluate` and the
+deployer list; the database and CSV exports are attached to the run. Each run
+starts with an empty database, so it suits checks and short samples, not the
+24-hour outcome labels.
 
 ## Docker
 

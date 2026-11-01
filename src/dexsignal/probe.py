@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .models import PairSnapshot, TokenRef
-from .providers import DexScreenerClient
+from .providers import FEED_PATHS, DexScreenerClient
 from .risk import RiskProvider
 
 USDC_ETHEREUM = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
@@ -30,11 +30,12 @@ def _known(chain: str, address: str) -> PairSnapshot:
 
 def probe_dexscreener(client: DexScreenerClient) -> list[ProbeResult]:
     results: list[ProbeResult] = []
-    try:
-        refs = client.latest_tokens()
-        results.append(ProbeResult("dexscreener profiles", bool(refs), f"{len(refs)} tokens parsed"))
-    except Exception as exc:
-        results.append(ProbeResult("dexscreener profiles", False, type(exc).__name__))
+    for feed in FEED_PATHS:
+        try:
+            refs = client.feed_tokens(feed)
+            results.append(ProbeResult(f"dexscreener {feed}", bool(refs), f"{len(refs)} tokens parsed"))
+        except Exception as exc:
+            results.append(ProbeResult(f"dexscreener {feed}", False, type(exc).__name__))
     pairs = client.best_pairs([TokenRef("ethereum", USDC_ETHEREUM)]).pairs
     results.append(
         ProbeResult(

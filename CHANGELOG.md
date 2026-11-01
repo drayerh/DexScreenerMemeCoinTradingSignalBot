@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0
+
+Fixes the first live run, in which every token was filtered out (SPEC section 8).
+
+### Added
+- Watchlist: young tokens with no pool, no pair data or too little liquidity are
+  rechecked every cycle for `DSB_WATCH_HOURS` (default 6) and accepted when they
+  qualify, even after leaving the discovery feed. Schema v3.
+- Discovery from DexScreener's latest and top token boosts as well as latest
+  profiles (`DSB_DISCOVERY_FEEDS`). One failed feed no longer fails discovery.
+- Rejection reasons `no_pool_yet` (bonding-curve pairs) and `lookup_failed`,
+  split out of `no_pair_data`.
+- Cycle log and `stats` report watching and graduated tokens; `watchlist` and
+  `tokens` are exportable; `probe` checks each discovery feed.
+- `Live research run` workflow: run N live cycles on demand and download the
+  database.
+
 ## 1.1.0
 
 Implements the expert review in `docs/REVIEW.md` (19 of 22 findings; 3 deferred

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -65,33 +65,78 @@ def parse_pair(raw: Any) -> PairSnapshot | None:
 @dataclass
 class PairFetch:
     """Pairs found, plus the tokens whose batch failed (so absence there means 'unknown',
-    not 'delisted'; review round 2, finding 2)."""
+    not 'delisted'; review round 2, finding 2), and tokens whose only pairs have no pool
+    liquidity yet, such as pump.fun bonding curves."""
 
     pairs: list[PairSnapshot] = field(default_factory=list)
     failed: set[TokenRef] = field(default_factory=set)
+    unpooled: set[TokenRef] = field(default_factory=set)
+
+
+# FR-1: documented DexScreener discovery feeds; all share the same entry shape.
+FEED_PATHS = {
+    "profiles": "/token-profiles/latest/v1",
+    "boosts_latest": "/token-boosts/latest/v1",
+    "boosts_top": "/token-boosts/top/v1",
+}
+
+
+def _base_key(raw: Any) -> tuple[str, str] | None:
+    """(chainId, lower-cased base token address) of a raw pair, even if it is unusable."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("baseToken"), dict):
+        return None
+    chain, address = raw.get("chainId"), raw["baseToken"].get("address")
+    if isinstance(chain, str) and isinstance(address, str) and address:
+        return chain, address.lower()
+    return None
 
 
 class DexScreenerClient:
-    def __init__(self, http: HttpClient, base_url: str, batch_size: int) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        base_url: str,
+        batch_size: int,
+        feeds: Sequence[str] = ("profiles",),
+    ) -> None:
         self._http = http
         self._base = base_url
         self._batch = batch_size
+        self._feeds = tuple(feeds)
 
     def latest_tokens(self) -> list[TokenRef]:
-        """FR-1: newest token profiles, de-duplicated, order preserved."""
-        data = self._http.get_json(f"{self._base}/token-profiles/latest/v1")
-        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        """FR-1: newest tokens from every configured feed, de-duplicated, order preserved.
+        One failed feed is skipped; discovery fails only if every feed fails."""
         seen: set[TokenRef] = set()
+        refs: list[TokenRef] = []
+        errors: list[Exception] = []
+        for feed in self._feeds:
+            try:
+                found = self.feed_tokens(feed)
+            except Exception as exc:  # NFR-1
+                log.warning("discovery feed failed feed=%s error=%s", feed, type(exc).__name__)
+                errors.append(exc)
+                continue
+            for ref in found:
+                key = TokenRef(ref.chain_id, norm_address(ref.token_address))
+                if key not in seen:
+                    seen.add(key)
+                    refs.append(ref)
+        if errors and len(errors) == len(self._feeds):
+            raise errors[-1]
+        return refs
+
+    def feed_tokens(self, feed: str) -> list[TokenRef]:
+        """Tokens listed by one discovery feed; raises if the feed is unreachable."""
+        data = self._http.get_json(f"{self._base}{FEED_PATHS[feed]}")
+        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
         refs: list[TokenRef] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             chain, address = item.get("chainId"), item.get("tokenAddress")
             if isinstance(chain, str) and isinstance(address, str) and chain and address:
-                ref = TokenRef(chain, address)
-                if ref not in seen:
-                    seen.add(ref)
-                    refs.append(ref)
+                refs.append(TokenRef(chain, address))
         return refs
 
     def best_pairs(self, refs: Iterable[TokenRef]) -> PairFetch:
@@ -102,6 +147,7 @@ class DexScreenerClient:
             by_chain.setdefault(ref.chain_id, []).append(ref.token_address)
         wanted = {(r.chain_id, r.token_address.lower()) for r in ref_list}
         best: dict[tuple[str, str], PairSnapshot] = {}
+        listed: set[tuple[str, str]] = set()
         failed: set[TokenRef] = set()
         for chain, addresses in by_chain.items():
             for batch in _chunks(addresses, self._batch):
@@ -115,6 +161,9 @@ class DexScreenerClient:
                     failed.update(TokenRef(chain, norm_address(a)) for a in batch)
                     continue
                 for raw in data if isinstance(data, list) else []:
+                    raw_key = _base_key(raw)
+                    if raw_key in wanted:
+                        listed.add(raw_key)
                     snap = parse_pair(raw)
                     if snap is None:
                         continue
@@ -124,7 +173,12 @@ class DexScreenerClient:
                     current = best.get(key)
                     if current is None or snap.liquidity_usd > current.liquidity_usd:
                         best[key] = snap
-        return PairFetch(list(best.values()), failed)
+        unpooled = {
+            TokenRef(r.chain_id, norm_address(r.token_address))
+            for r in ref_list
+            if (r.chain_id, r.token_address.lower()) in listed - best.keys()
+        }
+        return PairFetch(list(best.values()), failed, unpooled)
 
 
 def format_observation(obs: Observation) -> str:

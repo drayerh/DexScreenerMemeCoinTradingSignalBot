@@ -52,6 +52,16 @@ def _get_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
     raise ConfigError(f"{key} must be true or false, got {raw!r}")
 
 
+def _get_list(env: Mapping[str, str], key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = env.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    return tuple(dict.fromkeys(part.strip().lower() for part in raw.split(",") if part.strip()))
+
+
+DISCOVERY_FEEDS = ("profiles", "boosts_latest", "boosts_top")
+
+
 @dataclass(frozen=True)
 class Settings:
     """All runtime settings. See docs/SPEC.md for the meaning of each."""
@@ -95,6 +105,10 @@ class Settings:
     track_hours: int = 24
     negative_ttl_minutes: int = 10
     log_format: str = "text"
+    # Discovery and watchlist (SPEC FR-1, FR-19)
+    discovery_feeds: tuple[str, ...] = ("profiles", "boosts_latest", "boosts_top")
+    watch_hours: int = 6
+    watch_max_tokens: int = 1000
 
     @property
     def pocket_universe_enabled(self) -> bool:
@@ -166,7 +180,15 @@ class Settings:
             track_hours=_get_int(e, "DSB_TRACK_HOURS", d.track_hours, minimum=1),
             negative_ttl_minutes=_get_int(e, "DSB_NEGATIVE_TTL_MINUTES", d.negative_ttl_minutes, minimum=1),
             log_format=_get_str(e, "DSB_LOG_FORMAT", d.log_format).lower(),
+            discovery_feeds=_get_list(e, "DSB_DISCOVERY_FEEDS", d.discovery_feeds),
+            watch_hours=_get_int(e, "DSB_WATCH_HOURS", d.watch_hours),
+            watch_max_tokens=_get_int(e, "DSB_WATCH_MAX_TOKENS", d.watch_max_tokens, minimum=1),
         )
+        unknown = set(settings.discovery_feeds) - set(DISCOVERY_FEEDS)
+        if unknown or not settings.discovery_feeds:
+            raise ConfigError(
+                f"DSB_DISCOVERY_FEEDS must be a comma-separated subset of {', '.join(DISCOVERY_FEEDS)}"
+            )
         if bool(settings.telegram_token) != bool(settings.telegram_chat_id):
             raise ConfigError("Set both DSB_TELEGRAM_TOKEN and DSB_TELEGRAM_CHAT_ID, or neither")
         for key, value in (
