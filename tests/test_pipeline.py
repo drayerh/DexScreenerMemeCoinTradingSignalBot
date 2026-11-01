@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from dexsignal.config import Settings
-from dexsignal.models import ObservationKind, ScreenResult, ScreenStatus
+from dexsignal.models import ObservationKind, ScreenStatus
 from dexsignal.pipeline import Pipeline
 from dexsignal.storage import Storage
 
-from .conftest import FakeClock, FakeMarket, FakeNotifier, FakeScreener, snap
+from .conftest import FakeClock, FakeMarket, FakeNotifier, FakeProvider, snap
 
 
 def make(storage: Storage, settings: Settings, **kw: object) -> tuple[Pipeline, FakeMarket, FakeClock]:
     market = FakeMarket()
     clock = FakeClock()
-    screener = kw.get("screener", FakeScreener())
+    providers = kw.get("providers", [FakeProvider()])
     notifier = kw.get("notifier", FakeNotifier())
-    p = Pipeline(settings, storage, market, screener, notifier, clock=clock)  # type: ignore[arg-type]
+    p = Pipeline(settings, storage, market, providers, notifier, clock=clock)  # type: ignore[arg-type]
     return p, market, clock
 
 
@@ -67,8 +67,7 @@ def test_too_few_points_reports_nothing(storage: Storage, settings: Settings) ->
 
 
 def test_rejections_are_never_stored(storage: Storage, settings: Settings) -> None:
-    rejected = FakeScreener(ScreenResult(ScreenStatus.REJECTED, "danger: mint authority"))
-    p, market, _ = make(storage, settings, screener=rejected)
+    p, market, _ = make(storage, settings, providers=[FakeProvider(ScreenStatus.REJECTED)])
     storage.blacklist_add("ethereum", "0xABC")
     market.pairs = [
         snap(address="Danger1"),  # rugcheck rejected
@@ -79,7 +78,7 @@ def test_rejections_are_never_stored(storage: Storage, settings: Settings) -> No
     report = p.run_cycle()
     assert storage.stats()["snapshots"] == 0  # AC-5
     assert report.rejected == {
-        "rugcheck_rejected": 1,
+        "risk_rejected": 1,
         "low_liquidity": 1,
         "suspicious_volume": 1,
         "blacklisted": 1,
@@ -87,26 +86,33 @@ def test_rejections_are_never_stored(storage: Storage, settings: Settings) -> No
 
 
 def test_non_solana_tokens_are_stored_unscreened(storage: Storage, settings: Settings) -> None:
-    screener = FakeScreener()
-    p, market, _ = make(storage, settings, screener=screener)
+    provider = FakeProvider()
+    p, market, _ = make(storage, settings, providers=[provider])
     market.pairs = [snap(chain="base", address="0xdef")]
     p.run_cycle()
-    assert screener.calls == 0
+    assert provider.calls == 0
     assert storage.stats()["snapshots"] == 1
 
 
-def test_screening_results_are_cached(storage: Storage, settings: Settings) -> None:
-    screener = FakeScreener()
-    p, market, clock = make(storage, settings, screener=screener)
+def test_rejected_tokens_use_cached_risk_checks(storage: Storage, settings: Settings) -> None:
+    provider = FakeProvider(ScreenStatus.REJECTED)
+    p, market, clock = make(storage, settings, providers=[provider])
     run_series(p, market, clock, [1, 1, 1])
-    assert screener.calls == 1
+    assert provider.calls == 1
     clock.advance(settings.screen_ttl_minutes + 1)
     p.run_cycle()
-    assert screener.calls == 2
+    assert provider.calls == 2
+
+
+def test_accepted_tokens_are_not_rescreened(storage: Storage, settings: Settings) -> None:
+    provider = FakeProvider()
+    p, market, clock = make(storage, settings, providers=[provider])
+    run_series(p, market, clock, [1, 1, 1])
+    assert provider.calls == 1
 
 
 def test_screener_crash_does_not_stop_cycle(storage: Storage, settings: Settings) -> None:
-    p, market, _ = make(storage, settings, screener=FakeScreener(raises=True))
+    p, market, _ = make(storage, settings, providers=[FakeProvider(raises=True)])
     market.pairs = [snap(address="A"), snap(chain="base", address="0xB")]
     report = p.run_cycle()
     assert report.rejected == {"screening_error": 1}  # AC-4
@@ -134,9 +140,9 @@ def test_no_notifier_configured(storage: Storage, settings: Settings) -> None:
 
 
 def test_old_snapshots_are_pruned(storage: Storage) -> None:
-    settings = Settings(retention_days=1)
+    settings = Settings(retention_days=2)
     p, market, clock = make(storage, settings)
     run_series(p, market, clock, [1])
-    clock.advance(60 * 24 * 2)
+    clock.advance(60 * 24 * 3)
     run_series(p, market, clock, [1])
     assert storage.stats()["snapshots"] == 1

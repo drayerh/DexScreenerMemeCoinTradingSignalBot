@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from dexsignal.config import Settings
-from dexsignal.models import Observation, PairSnapshot, ScreenResult, ScreenStatus, TokenRef
+from dexsignal.models import Observation, PairSnapshot, ScreenStatus, TokenRef
+from dexsignal.providers import PairFetch
+from dexsignal.risk import Creator, RiskAssessment
 from dexsignal.storage import Storage
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -26,6 +29,7 @@ class FakeClock:
 class FakeMarket:
     def __init__(self) -> None:
         self.pairs: list[PairSnapshot] = []
+        self.failed: set[TokenRef] = set()
         self.fail_discovery = False
 
     def latest_tokens(self) -> list[TokenRef]:
@@ -33,24 +37,40 @@ class FakeMarket:
             raise RuntimeError("down")
         return [TokenRef(p.chain_id, p.token_address) for p in self.pairs]
 
-    def best_pairs(self, refs: list[TokenRef]) -> list[PairSnapshot]:
-        return list(self.pairs)
+    def best_pairs(self, refs: list[TokenRef]) -> PairFetch:
+        return PairFetch(list(self.pairs), set(self.failed))
 
 
-class FakeScreener:
-    def __init__(self, result: ScreenResult | None = None, raises: bool = False) -> None:
-        self.result = result or ScreenResult(ScreenStatus.PASSED)
+class FakeProvider:
+    """Test double for a RiskProvider."""
+
+    def __init__(
+        self,
+        status: ScreenStatus = ScreenStatus.PASSED,
+        *,
+        name: str = "fake",
+        chains: tuple[str, ...] = ("solana",),
+        creators: tuple[Creator, ...] = (),
+        creator_only: bool = False,
+        raises: bool = False,
+    ) -> None:
+        self.name = name
+        self.creator_only = creator_only
+        self.status = status
+        self.chains = chains
+        self.creators = creators
         self.raises = raises
         self.calls = 0
 
     def supports(self, chain_id: str) -> bool:
-        return chain_id == "solana"
+        return chain_id in self.chains
 
-    def screen(self, mint: str) -> ScreenResult:
+    def assess(self, snap: PairSnapshot) -> RiskAssessment:
         self.calls += 1
         if self.raises:
             raise RuntimeError("boom")
-        return self.result
+        reasons = ("fake reject",) if self.status is ScreenStatus.REJECTED else ()
+        return RiskAssessment(self.name, self.status, reasons, {"x": 1.0}, self.creators)
 
 
 class FakeNotifier:
@@ -84,3 +104,13 @@ def storage() -> Iterator[Storage]:
 @pytest.fixture
 def settings() -> Settings:
     return Settings()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logging() -> Iterator[None]:
+    """The CLI replaces root handlers; restore them so later tests never log to a closed stream."""
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)

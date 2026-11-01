@@ -8,17 +8,15 @@ import responses
 from responses import matchers
 
 from dexsignal.http import HttpClient, RateLimiter
-from dexsignal.models import Observation, ObservationKind, ScreenStatus, TokenRef
+from dexsignal.models import Observation, ObservationKind, TokenRef
 from dexsignal.providers import (
     DexScreenerClient,
-    RugCheckClient,
     TelegramNotifier,
     format_observation,
     parse_pair,
 )
 
 DS = "https://api.dexscreener.com"
-RC = "https://api.rugcheck.xyz"
 TG = "https://api.telegram.org"
 
 
@@ -86,33 +84,11 @@ def test_best_pairs_batches_per_chain_and_keeps_most_liquid() -> None:
         TokenRef("solana", "C"),
         TokenRef("base", "0xD"),
     ]
-    pairs = DexScreenerClient(http(), DS, 2).best_pairs(refs)
-    by_token = {p.token_address: p.liquidity_usd for p in pairs}
+    fetch = DexScreenerClient(http(), DS, 2).best_pairs(refs)
+    by_token = {p.token_address: p.liquidity_usd for p in fetch.pairs}
+    assert fetch.failed == {TokenRef("base", "0xd")}
     assert by_token == {"A": 99, "B": 5, "C": 7}  # AC-6 batching; AC-4 failed batch skipped
     assert len(responses.calls) == 3
-
-
-@responses.activate
-def test_rugcheck_rejects_danger_and_high_score() -> None:
-    client = RugCheckClient(http(), RC, 50)
-    responses.get(
-        f"{RC}/v1/tokens/M1/report/summary",
-        json={"score_normalised": 10, "risks": [{"name": "Mint authority", "level": "danger"}]},
-    )
-    responses.get(f"{RC}/v1/tokens/M2/report/summary", json={"score_normalised": 80, "risks": []})
-    responses.get(
-        f"{RC}/v1/tokens/M3/report/summary",
-        json={"score_normalised": 5, "risks": [{"name": "Low holders", "level": "warn"}]},
-    )
-    responses.get(f"{RC}/v1/tokens/M4/report/summary", status=404)
-    responses.get(f"{RC}/v1/tokens/M5/report/summary", json=["unexpected"])
-    r1 = client.screen("M1")
-    assert r1.status is ScreenStatus.REJECTED and "Mint authority" in r1.reason
-    assert client.screen("M2").status is ScreenStatus.REJECTED
-    assert client.screen("M3").status is ScreenStatus.PASSED
-    assert client.screen("M4").status is ScreenStatus.UNSCREENED
-    assert client.screen("M5").status is ScreenStatus.UNSCREENED
-    assert RugCheckClient.supports("solana") and not RugCheckClient.supports("ethereum")
 
 
 OBS = Observation(

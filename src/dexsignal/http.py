@@ -67,9 +67,11 @@ class HttpClient:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-    def get_json(self, url: str, params: dict[str, str] | None = None) -> Any:
+    def get_json(
+        self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None
+    ) -> Any:
         self._limiter.wait(urlsplit(url).netloc)
-        response = self.session.get(url, params=params, timeout=self._timeout)
+        response = self.session.get(url, params=params, headers=headers, timeout=self._timeout)
         response.raise_for_status()
         return response.json()
 
